@@ -1,0 +1,1083 @@
+# DrKLO/Telegram (Android) ad-blocker patch
+# base: DrKLO/Telegram @ 9fea7264725bbac16e5bd5f18fe22d7c6e8a3117
+# apply: git fetch --depth 1 origin 9fea7264725bbac16e5bd5f18fe22d7c6e8a3117 && git checkout FETCH_HEAD && git apply android-adblock.patch
+#
+diff --git a/TMessagesProj/src/main/assets/adblock_default_rules.json b/TMessagesProj/src/main/assets/adblock_default_rules.json
+new file mode 100644
+index 00000000..125a739d
+--- /dev/null
++++ b/TMessagesProj/src/main/assets/adblock_default_rules.json
+@@ -0,0 +1,437 @@
++[
++ {
++  "simhash": "6126921129027286195",
++  "keywords": [
++   "гарантированный",
++   "доход",
++   "зайти",
++   "закрытый",
++   "запускаем",
++   "иксы",
++   "инвесторов",
++   "канал",
++   "клуб",
++   "крипте",
++   "места",
++   "неделю",
++   "новый",
++   "ограничены",
++   "профит",
++   "сигнал",
++   "успей"
++  ],
++  "domains": [
++   "cryptopump.xyz"
++  ],
++  "block_sender": false,
++  "text_sample": "🚀 Закрытый клуб инвесторов! Запускаем новый сигнал на иксы. Профит 300% за неделю на крипте. Места ограничены, успей зайти в закрытый канал."
++ },
++ {
++  "simhash": "3508230812423695510",
++  "keywords": [
++   "гарантирован",
++   "даёт",
++   "доход",
++   "доходность",
++   "закрытый",
++   "заходи",
++   "иксы",
++   "инвест",
++   "канал",
++   "клуб",
++   "количество",
++   "криптовалюте",
++   "мест",
++   "набор",
++   "неделю",
++   "новый",
++   "ограничено",
++   "открыт",
++   "приватный",
++   "сигнал"
++  ],
++  "domains": [
++   "cryptopump.xyz"
++  ],
++  "block_sender": false,
++  "text_sample": "Открыт набор в приватный инвест-клуб. Новый сигнал даёт иксы — доходность до 300% за неделю на криптовалюте. Количество мест ограничено, зах"
++ },
++ {
++  "simhash": "4757050471605311699",
++  "keywords": [
++   "гарантированный",
++   "дней",
++   "друзья",
++   "закончились",
++   "закрытый",
++   "заработок",
++   "иксах",
++   "инвесторов",
++   "клуб",
++   "крипте",
++   "места",
++   "почти",
++   "профит",
++   "процентов",
++   "свежий",
++   "сигнал",
++   "стартует"
++  ],
++  "domains": [
++   "cryptopump.xyz"
++  ],
++  "block_sender": false,
++  "text_sample": "Друзья, стартует свежий сигнал на крипте! Профит 300 процентов за 7 дней, закрытый клуб инвесторов, места почти закончились. Гарантированный"
++ },
++ {
++  "simhash": "4826019553936445365",
++  "keywords": [
++   "бонус",
++   "верификации",
++   "вывод",
++   "делай",
++   "депозит",
++   "заходи",
++   "казино",
++   "крупному",
++   "лудоманим",
++   "первый",
++   "получи",
++   "промокод",
++   "счёт",
++   "фриспинов"
++  ],
++  "domains": [
++   "luckyjet-bonus.com"
++  ],
++  "block_sender": false,
++  "text_sample": "💰 Промокод на 500 фриспинов! Заходи в казино, делай первый депозит и получи бонус 100% на счёт. Вывод без верификации. Лудоманим по-крупному"
++ },
++ {
++  "simhash": "7421007162395899367",
++  "keywords": [
++   "бесплатных",
++   "бонус",
++   "вращений",
++   "вывод",
++   "депозиту",
++   "документов",
++   "забери",
++   "казино",
++   "лови",
++   "пополни",
++   "проверки",
++   "промокод",
++   "процентов",
++   "регистрируйся",
++   "средств",
++   "счёт"
++  ],
++  "domains": [
++   "luckyjet-bonus.com"
++  ],
++  "block_sender": false,
++  "text_sample": "Лови промокод: 500 бесплатных вращений! Регистрируйся в казино, пополни счёт и забери бонус 100 процентов к депозиту. Вывод средств без пров"
++ },
++ {
++  "simhash": "386733119077143973",
++  "keywords": [
++   "баланс",
++   "бонус",
++   "верификации",
++   "вывод",
++   "депозит",
++   "ждут",
++   "казино",
++   "моментальный",
++   "первый",
++   "промокоду",
++   "удваиваем",
++   "фриспинов"
++  ],
++  "domains": [
++   "luckyjet-bonus.com"
++  ],
++  "block_sender": false,
++  "text_sample": "500 фриспинов по промокоду уже ждут! Первый депозит удваиваем — бонус 100% на баланс казино, моментальный вывод без верификации."
++ },
++ {
++  "simhash": "5775576294385782663",
++  "keywords": [
++   "бесплатный",
++   "бирже",
++   "вебинар",
++   "зарабатывать",
++   "количество",
++   "марафон",
++   "мест",
++   "месяц",
++   "научу",
++   "нуля",
++   "ограничено",
++   "регистрируйся",
++   "рублей",
++   "ссылку",
++   "трейдингу"
++  ],
++  "domains": [
++   "trading-academy.ru"
++  ],
++  "block_sender": false,
++  "text_sample": "Бесплатный вебинар по трейдингу! Научу зарабатывать на бирже с нуля от 100 000 рублей в месяц. Регистрируйся на марафон, количество мест огр"
++ },
++ {
++  "simhash": "4887924425266973218",
++  "keywords": [
++   "100к",
++   "бесплатный",
++   "бирже",
++   "делать",
++   "записывайся",
++   "запись",
++   "класс",
++   "мало",
++   "марафон",
++   "мастер",
++   "мест",
++   "месяц",
++   "нуля",
++   "открыта",
++   "переходи",
++   "покажу",
++   "рублей",
++   "ссылке",
++   "трейдингу"
++  ],
++  "domains": [
++   "trading-academy.ru"
++  ],
++  "block_sender": false,
++  "text_sample": "Открыта запись на бесплатный мастер-класс по трейдингу. С нуля покажу, как делать от 100к рублей в месяц на бирже. Записывайся на марафон — "
++ },
++ {
++  "simhash": "8351609907407734279",
++  "keywords": [
++   "бесплатный",
++   "бирже",
++   "вебинар",
++   "занять",
++   "марафон",
++   "место",
++   "месяц",
++   "нуля",
++   "открыта",
++   "приглашаю",
++   "регистрация",
++   "трейдинг",
++   "успей",
++   "фондовой"
++  ],
++  "domains": [
++   "trading-academy.ru"
++  ],
++  "block_sender": false,
++  "text_sample": "Приглашаю на бесплатный вебинар: трейдинг с нуля до 100 000 ₽ в месяц на фондовой бирже. Регистрация на марафон открыта, успей занять место."
++ },
++ {
++  "simhash": "6861193411551576010",
++  "keywords": [
++   "день",
++   "залетай",
++   "каждый",
++   "канал",
++   "мемы",
++   "новости",
++   "подписчиков",
++   "подпишись",
++   "розыгрыши",
++   "самые",
++   "свежие",
++   "тебя"
++  ],
++  "domains": [],
++  "block_sender": false,
++  "text_sample": "Подпишись на наш канал! Тут самые свежие новости, мемы и розыгрыши каждый день. Залетай, у нас уже 50 000 подписчиков. Жду тебя 👇"
++ },
++ {
++  "simhash": "757613742910154542",
++  "keywords": [
++   "больше",
++   "ежедневные",
++   "ждём",
++   "залетай",
++   "именно",
++   "канал",
++   "мемы",
++   "новости",
++   "подписчиков",
++   "подписывайся",
++   "розыгрыши",
++   "тебя"
++  ],
++  "domains": [],
++  "block_sender": false,
++  "text_sample": "Залетай на канал — ежедневные новости, мемы и розыгрыши. Нас уже больше 50к подписчиков, подписывайся, ждём именно тебя!"
++ },
++ {
++  "simhash": "5566400203025260358",
++  "keywords": [
++   "день",
++   "каждый",
++   "канале",
++   "мемы",
++   "нами",
++   "нашем",
++   "новости",
++   "подпишись",
++   "розыгрыши",
++   "свежие",
++   "человек"
++  ],
++  "domains": [],
++  "block_sender": false,
++  "text_sample": "Свежие новости, мемы и розыгрыши каждый день — всё на нашем канале. Уже 50 000 человек с нами, подпишись и ты 👇"
++ },
++ {
++  "simhash": "18093120941460362015",
++  "keywords": [
++   "деньги",
++   "займ",
++   "зарплаты",
++   "карту",
++   "минут",
++   "одобрение",
++   "онлайн",
++   "отказа",
++   "оформи",
++   "первый",
++   "проверок",
++   "прямо",
++   "сейчас"
++  ],
++  "domains": [
++   "bystro-zaim.ru"
++  ],
++  "block_sender": false,
++  "text_sample": "Деньги до зарплаты за 5 минут! Займ онлайн на карту без отказа и проверок. Одобрение 99%, первый займ под 0%. Оформи прямо сейчас."
++ },
++ {
++  "simhash": "14974712786089875247",
++  "keywords": [
++   "деньги",
++   "займ",
++   "заявок",
++   "истории",
++   "карту",
++   "кредитной",
++   "микрозайм",
++   "минут",
++   "нужны",
++   "одобряем",
++   "отказов",
++   "первый",
++   "проверки",
++   "процентов",
++   "срочно"
++  ],
++  "domains": [
++   "bystro-zaim.ru"
++  ],
++  "block_sender": false,
++  "text_sample": "Срочно нужны деньги? Микрозайм на карту за 5 минут без отказов и проверки кредитной истории. Одобряем 99% заявок, первый займ 0 процентов."
++ },
++ {
++  "simhash": "5727080987721060879",
++  "keywords": [
++   "бесплатно",
++   "деньги",
++   "займ",
++   "зарплаты",
++   "карту",
++   "клиентам",
++   "минут",
++   "новым",
++   "одобрение",
++   "онлайн",
++   "отказа",
++   "первый",
++   "пять"
++  ],
++  "domains": [
++   "bystro-zaim.ru"
++  ],
++  "block_sender": false,
++  "text_sample": "Займ онлайн до зарплаты — деньги на карту за пять минут, без отказа. Одобрение 99%, новым клиентам первый займ бесплатно под 0%."
++ },
++ {
++  "simhash": "8035087267834461112",
++  "keywords": [
++   "iphone",
++   "двух",
++   "друзей",
++   "итоги",
++   "канал",
++   "комментариях",
++   "лайк",
++   "неделю",
++   "отметь",
++   "подпишись",
++   "поставь",
++   "розыгрыш",
++   "удачи",
++   "участвовать",
++   "через"
++  ],
++  "domains": [],
++  "block_sender": false,
++  "text_sample": "🎁 Розыгрыш iPhone 16 Pro! Чтобы участвовать: подпишись на канал, поставь лайк и отметь двух друзей в комментариях. Итоги через неделю. Удачи"
++ },
++ {
++  "simhash": "16093005669332248377",
++  "keywords": [
++   "iphone",
++   "выберем",
++   "двоих",
++   "дней",
++   "друзей",
++   "канал",
++   "комментах",
++   "лайк",
++   "новый",
++   "отметь",
++   "победителя",
++   "подписка",
++   "простые",
++   "разыгрываем",
++   "условия",
++   "через"
++  ],
++  "domains": [],
++  "block_sender": false,
++  "text_sample": "Разыгрываем новый iPhone 16 Pro! Условия простые: подписка на канал, лайк и отметь двоих друзей в комментах. Победителя выберем через 7 дней"
++ },
++ {
++  "simhash": "5743178578056572561",
++  "keywords": [
++   "iphone",
++   "всем",
++   "дарим",
++   "двух",
++   "друзей",
++   "канал",
++   "комментариях",
++   "лайкни",
++   "неделю",
++   "подпишись",
++   "пост",
++   "результаты",
++   "удачи",
++   "упомяни",
++   "участия",
++   "через"
++  ],
++  "domains": [],
++  "block_sender": false,
++  "text_sample": "Дарим iPhone 16 Pro! Для участия подпишись на канал, лайкни пост и упомяни двух друзей в комментариях. Результаты через неделю, удачи всем!"
++ }
++]
+\ No newline at end of file
+diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
+new file mode 100644
+index 00000000..7595490a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
+@@ -0,0 +1,154 @@
++package com.tgadblock;
++
++import android.content.Context;
++
++import org.telegram.messenger.MessageObject;
++
++import java.util.HashMap;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Locale;
++import java.util.Map;
++import java.util.Set;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++/**
++ * In-client glue for the offline-validated detection pipeline (Android).
++ * Bridges MessageObject -> Normalize/Core and owns the SQLite rule store.
++ * Call {@link #init(Context)} once (e.g. from ApplicationLoader) before use.
++ */
++public final class AdFilter {
++    private static volatile AdFilter instance;
++
++    private final AdStore store;
++    private List<Core.Rule> rules;
++    private Core.Config config;
++    private final Map<Integer, Boolean> cache = new HashMap<>();
++
++    private static final Pattern DOMAIN = Pattern.compile(
++            "(?:https?://|www\\.)?([a-z0-9.-]+\\.(?:ru|com|net|org|io|me|app|xyz|cc|biz|info))");
++
++    private AdFilter(Context ctx) {
++        store = new AdStore(ctx);
++        seedDefaultsIfNeeded(ctx);
++        reload();
++    }
++
++    // On first launch, load the bundled starter ruleset so common ads are hidden
++    // out of the box. Preseed rules carry no sender, so they fire via SimHash
++    // near-dup, strong keyword overlap, or a known ad-domain match.
++    private void seedDefaultsIfNeeded(Context ctx) {
++        if (store.isSeeded()) {
++            return;
++        }
++        try (java.io.InputStream is = ctx.getAssets().open("adblock_default_rules.json")) {
++            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
++            byte[] buf = new byte[4096];
++            int n;
++            while ((n = is.read(buf)) > 0) {
++                bos.write(buf, 0, n);
++            }
++            org.json.JSONArray arr = new org.json.JSONArray(
++                    new String(bos.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
++            for (int i = 0; i < arr.length(); i++) {
++                org.json.JSONObject o = arr.getJSONObject(i);
++                store.addRule(
++                        "",
++                        o.optBoolean("block_sender", false),
++                        true,
++                        Long.parseUnsignedLong(o.getString("simhash")),
++                        jsonToSet(o.optJSONArray("keywords")),
++                        jsonToSet(o.optJSONArray("domains")),
++                        o.optString("text_sample", ""));
++            }
++        } catch (Throwable ignore) {
++            // missing/malformed asset -> skip preseed (manual tap-to-block still works)
++        }
++        store.markSeeded();
++    }
++
++    private static Set<String> jsonToSet(org.json.JSONArray a) {
++        Set<String> out = new HashSet<>();
++        if (a != null) {
++            for (int i = 0; i < a.length(); i++) {
++                out.add(a.optString(i));
++            }
++        }
++        return out;
++    }
++
++    public static void init(Context ctx) {
++        if (instance == null) {
++            synchronized (AdFilter.class) {
++                if (instance == null) instance = new AdFilter(ctx.getApplicationContext());
++            }
++        }
++    }
++
++    public static AdFilter getInstance() {
++        return instance;
++    }
++
++    public synchronized void reload() {
++        rules = store.loadRules();
++        config = store.getConfig();
++        cache.clear();
++    }
++
++    private static String textOf(MessageObject mo) {
++        if (mo.messageOwner != null && mo.messageOwner.message != null) {
++            return mo.messageOwner.message;
++        }
++        return mo.messageText != null ? mo.messageText.toString() : null;
++    }
++
++    private static String senderId(MessageObject mo) {
++        return String.valueOf(mo.getSenderId());
++    }
++
++    private static Set<String> domains(String raw) {
++        Set<String> out = new HashSet<>();
++        Matcher m = DOMAIN.matcher(raw.toLowerCase(Locale.ROOT));
++        while (m.find()) {
++            String host = m.group(1);
++            if (host.startsWith("www.")) host = host.substring(4);
++            out.add(host);
++        }
++        return out;
++    }
++
++    public synchronized boolean isAd(MessageObject mo) {
++        if (mo == null || rules.isEmpty()) return false;
++        Integer key = mo.getId();
++        Boolean cached = cache.get(key);
++        if (cached != null) return cached;
++        String text = textOf(mo);
++        boolean blocked = false;
++        if (text != null && !text.trim().isEmpty()) {
++            Core.MsgFeat f = new Core.MsgFeat();
++            f.senderId = senderId(mo);
++            f.simhash = Normalize.simhashOf(text);
++            f.tokens = Normalize.tokenSet(text);
++            f.domains = domains(text);
++            blocked = Core.classify(rules, f, config).blocked;
++        }
++        cache.put(key, blocked);
++        return blocked;
++    }
++
++    public synchronized void blockItem(MessageObject mo) {
++        if (mo == null) return;
++        String text = textOf(mo);
++        if (text == null || text.trim().isEmpty()) return;
++        store.addRule(
++                senderId(mo),
++                /*blockSender=*/false,
++                /*hasSimhash=*/true,
++                Normalize.simhashOf(text),
++                Normalize.keywords(text),
++                domains(text),
++                text.length() > 280 ? text.substring(0, 280) : text);
++        reload();
++    }
++}
+diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdStore.java b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
+new file mode 100644
+index 00000000..af232cbd
+--- /dev/null
++++ b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
+@@ -0,0 +1,147 @@
++package com.tgadblock;
++
++import android.content.ContentValues;
++import android.content.Context;
++import android.database.Cursor;
++import android.database.sqlite.SQLiteDatabase;
++import android.database.sqlite.SQLiteOpenHelper;
++
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Set;
++import java.util.TreeSet;
++
++/**
++ * SQLite rule store (Android). Schema is the byte-compatible twin of the Python
++ * tg_adblock.rules and the C++ AdStore, so a rules.db produced by any of them
++ * loads here unchanged (verified bidirectionally for the Python<->C++ pair).
++ */
++public final class AdStore extends SQLiteOpenHelper {
++    private static final String DB_NAME = "adblock_rules.db";
++    private static final int DB_VERSION = 1;
++
++    public AdStore(Context ctx) {
++        super(ctx.getApplicationContext(), DB_NAME, null, DB_VERSION);
++    }
++
++    @Override
++    public void onCreate(SQLiteDatabase db) {
++        db.execSQL("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
++        db.execSQL("CREATE TABLE IF NOT EXISTS rules ("
++                + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
++                + "created_at TEXT NOT NULL,"
++                + "origin TEXT NOT NULL DEFAULT 'manual',"
++                + "sender_id TEXT,"
++                + "sender_name TEXT,"
++                + "block_sender INTEGER NOT NULL DEFAULT 0,"
++                + "simhash TEXT,"
++                + "keywords TEXT NOT NULL DEFAULT '',"
++                + "domains TEXT NOT NULL DEFAULT '',"
++                + "text_sample TEXT NOT NULL DEFAULT '',"
++                + "enabled INTEGER NOT NULL DEFAULT 1)");
++        setDefaultMeta(db, "schema_version", "1");
++        setDefaultMeta(db, "simhash_threshold", "8");
++        setDefaultMeta(db, "kw_ratio", "0.35");
++        setDefaultMeta(db, "kw_min", "3");
++        setDefaultMeta(db, "kw_strong_ratio", "0.7");
++    }
++
++    @Override
++    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
++        // Schema v1 only so far; nothing to migrate.
++    }
++
++    private static void setDefaultMeta(SQLiteDatabase db, String key, String value) {
++        db.execSQL("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
++                new Object[]{key, value});
++    }
++
++    public long addRule(String senderId, boolean blockSender, boolean hasSimhash,
++                        long simhash, Set<String> keywords, Set<String> domains,
++                        String textSample) {
++        SQLiteDatabase db = getWritableDatabase();
++        ContentValues cv = new ContentValues();
++        cv.put("created_at", "datetime");
++        cv.put("origin", "manual");
++        cv.put("sender_id", senderId);
++        cv.putNull("sender_name");
++        cv.put("block_sender", blockSender ? 1 : 0);
++        cv.put("simhash", hasSimhash ? Long.toUnsignedString(simhash) : null);
++        cv.put("keywords", join(keywords));
++        cv.put("domains", join(domains));
++        cv.put("text_sample", textSample);
++        cv.put("enabled", 1);
++        return db.insert("rules", null, cv);
++    }
++
++    public List<Core.Rule> loadRules() {
++        List<Core.Rule> out = new ArrayList<>();
++        SQLiteDatabase db = getReadableDatabase();
++        try (Cursor c = db.rawQuery(
++                "SELECT id, sender_id, block_sender, simhash, keywords, domains "
++                + "FROM rules WHERE enabled = 1", null)) {
++            while (c.moveToNext()) {
++                Core.Rule r = new Core.Rule();
++                r.id = c.getLong(0);
++                r.senderId = c.isNull(1) ? "" : c.getString(1);
++                r.blockSender = c.getInt(2) != 0;
++                if (!c.isNull(3)) {
++                    r.hasSimhash = true;
++                    r.simhash = Long.parseUnsignedLong(c.getString(3));
++                }
++                r.keywords = split(c.isNull(4) ? "" : c.getString(4));
++                r.domains = split(c.isNull(5) ? "" : c.getString(5));
++                out.add(r);
++            }
++        }
++        return out;
++    }
++
++    public Core.Config getConfig() {
++        Core.Config cfg = new Core.Config();
++        SQLiteDatabase db = getReadableDatabase();
++        try (Cursor c = db.rawQuery("SELECT key, value FROM meta", null)) {
++            while (c.moveToNext()) {
++                String k = c.getString(0), v = c.getString(1);
++                switch (k) {
++                    case "simhash_threshold": cfg.simhashThreshold = Integer.parseInt(v); break;
++                    case "kw_ratio": cfg.kwRatio = Double.parseDouble(v); break;
++                    case "kw_min": cfg.kwMin = Integer.parseInt(v); break;
++                    case "kw_strong_ratio": cfg.kwStrongRatio = Double.parseDouble(v); break;
++                    default: break;
++                }
++            }
++        }
++        return cfg;
++    }
++
++    public boolean isSeeded() {
++        SQLiteDatabase db = getReadableDatabase();
++        try (Cursor c = db.rawQuery("SELECT value FROM meta WHERE key = 'seeded'", null)) {
++            return c.moveToNext() && "1".equals(c.getString(0));
++        }
++    }
++
++    public void markSeeded() {
++        getWritableDatabase().execSQL(
++                "INSERT OR REPLACE INTO meta(key, value) VALUES ('seeded', '1')");
++    }
++
++    private static String join(Set<String> items) {
++        StringBuilder sb = new StringBuilder();
++        for (String x : new TreeSet<>(items)) {
++            if (sb.length() > 0) sb.append(' ');
++            sb.append(x);
++        }
++        return sb.toString();
++    }
++
++    private static Set<String> split(String s) {
++        Set<String> out = new HashSet<>();
++        for (String t : s.trim().split("\\s+")) {
++            if (!t.isEmpty()) out.add(t);
++        }
++        return out;
++    }
++}
+diff --git a/TMessagesProj/src/main/java/com/tgadblock/Core.java b/TMessagesProj/src/main/java/com/tgadblock/Core.java
+new file mode 100644
+index 00000000..12996c46
+--- /dev/null
++++ b/TMessagesProj/src/main/java/com/tgadblock/Core.java
+@@ -0,0 +1,136 @@
++package com.tgadblock;
++
++import java.util.List;
++import java.util.Set;
++
++/**
++ * Portable ad-detection core (Java port).
++ *
++ * Byte-for-byte twin of the Python reference (tg_adblock) and the C++ core:
++ * FNV-1a over UTF-8 bytes, classic 64-bit SimHash, and the same layered
++ * keyword/sender/SimHash decision. Verified identical to Python via generated
++ * test vectors (see TestCore.java + gen_vectors_java.py).
++ *
++ * As in the other ports, text normalization (text -> tokens/features) is NOT
++ * done here; on Android it is done with the platform/ICU-aware helpers in
++ * AdFilter so it matches Python's NFKC + \w+ tokenization.
++ */
++public final class Core {
++    private Core() {}
++
++    private static final long FNV_OFFSET = 0xCBF29CE484222325L;
++    private static final long FNV_PRIME = 0x100000001B3L;
++
++    public static long fnv1a64(String feature) {
++        long h = FNV_OFFSET;
++        for (byte b : feature.getBytes(java.nio.charset.StandardCharsets.UTF_8)) {
++            h ^= (b & 0xFFL);
++            h *= FNV_PRIME; // wraps mod 2^64 (signed long arithmetic is identical)
++        }
++        return h;
++    }
++
++    public static long simhash(List<String> features) {
++        if (features.isEmpty()) {
++            return 0L;
++        }
++        int[] v = new int[64];
++        for (String feat : features) {
++            long h = fnv1a64(feat);
++            for (int i = 0; i < 64; i++) {
++                if (((h >>> i) & 1L) != 0) v[i] += 1;
++                else v[i] -= 1;
++            }
++        }
++        long out = 0L;
++        for (int i = 0; i < 64; i++) {
++            if (v[i] > 0) out |= (1L << i);
++        }
++        return out;
++    }
++
++    public static int hamming(long a, long b) {
++        return Long.bitCount(a ^ b);
++    }
++
++    public static final class Config {
++        public int simhashThreshold = 8;
++        public double kwRatio = 0.35;
++        public int kwMin = 3;
++        public double kwStrongRatio = 0.7;
++    }
++
++    public static final class Rule {
++        public long id;
++        public String senderId = "";   // empty => no sender bound
++        public boolean blockSender = false;
++        public boolean hasSimhash = false;
++        public long simhash = 0L;
++        public Set<String> keywords = java.util.Collections.emptySet();
++        public Set<String> domains = java.util.Collections.emptySet();
++        public boolean enabled = true;
++    }
++
++    public static final class MsgFeat {
++        public String senderId = "";
++        public long simhash = 0L;
++        public Set<String> tokens = java.util.Collections.emptySet();
++        public Set<String> domains = java.util.Collections.emptySet();
++    }
++
++    public static final class Match {
++        public boolean blocked = false;
++        public long ruleId = -1;
++        public String reason = "";
++        public int distance = -1;
++    }
++
++    private static int intersectionSize(Set<String> a, Set<String> b) {
++        Set<String> small = (a.size() <= b.size()) ? a : b;
++        Set<String> big = (a.size() <= b.size()) ? b : a;
++        int n = 0;
++        for (String x : small) if (big.contains(x)) n++;
++        return n;
++    }
++
++    public static Match classify(List<Rule> rules, MsgFeat msg, Config cfg) {
++        for (Rule rule : rules) {
++            if (!rule.enabled) continue;
++            boolean senderMatch = rule.senderId != null && !rule.senderId.isEmpty()
++                    && rule.senderId.equals(msg.senderId);
++
++            if (rule.blockSender && senderMatch) {
++                return match(rule.id, "sender", -1);
++            }
++            if (rule.hasSimhash && !msg.tokens.isEmpty()) {
++                int d = hamming(rule.simhash, msg.simhash);
++                if (d <= cfg.simhashThreshold) {
++                    return match(rule.id, "simhash", d);
++                }
++            }
++            if (!rule.keywords.isEmpty() && rule.keywords.size() >= cfg.kwMin
++                    && !msg.tokens.isEmpty()) {
++                double overlap = (double) intersectionSize(rule.keywords, msg.tokens)
++                        / (double) rule.keywords.size();
++                boolean domainMatch = !rule.domains.isEmpty()
++                        && intersectionSize(rule.domains, msg.domains) > 0;
++                if (overlap >= cfg.kwRatio && (senderMatch || domainMatch)) {
++                    return match(rule.id, "keyword+context", -1);
++                }
++                if (overlap >= cfg.kwStrongRatio) {
++                    return match(rule.id, "keyword", -1);
++                }
++            }
++        }
++        return new Match();
++    }
++
++    private static Match match(long id, String reason, int distance) {
++        Match m = new Match();
++        m.blocked = true;
++        m.ruleId = id;
++        m.reason = reason;
++        m.distance = distance;
++        return m;
++    }
++}
+diff --git a/TMessagesProj/src/main/java/com/tgadblock/Normalize.java b/TMessagesProj/src/main/java/com/tgadblock/Normalize.java
+new file mode 100644
+index 00000000..683ee79a
+--- /dev/null
++++ b/TMessagesProj/src/main/java/com/tgadblock/Normalize.java
+@@ -0,0 +1,94 @@
++package com.tgadblock;
++
++import java.text.Normalizer;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Locale;
++import java.util.Set;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++/**
++ * Text normalization for the Android port — pure JDK (no android.* deps), so it
++ * compiles and is parity-tested off-device. Mirrors tg_adblock.normalize:
++ * NFKC + lowercase + strip urls/mentions + Unicode-aware \w tokenization.
++ */
++public final class Normalize {
++    private Normalize() {}
++
++    private static final Pattern URL = Pattern.compile(
++            "(?:https?://|www\\.)\\S+"
++          + "|\\b\\S+\\.(?:ru|com|net|org|io|me|app|xyz|cc|biz|info)\\b/?\\S*",
++            Pattern.CASE_INSENSITIVE);
++    private static final Pattern TME = Pattern.compile("\\bt\\.me/\\S+", Pattern.CASE_INSENSITIVE);
++    private static final Pattern MENTION = Pattern.compile("@[A-Za-z0-9_]{3,}");
++    private static final Pattern WS = Pattern.compile("\\s+");
++    // NB: Android's java.util.regex rejects Pattern.UNICODE_CHARACTER_CLASS, so we
++    // match Unicode letters+numbers explicitly via \p{L}\p{N} — works on both
++    // Android and the desktop JDK and stays parity-identical to Python's \w.
++    private static final Pattern TOKEN = Pattern.compile("[\\p{L}\\p{N}]+");
++
++    private static final Set<String> STOPWORDS = new HashSet<>(Arrays.asList(
++        "и","в","во","не","что","он","на","я","с","со","как","а","то","все",
++        "она","так","его","но","да","ты","к","у","же","вы","за","бы","по",
++        "только","ее","мне","было","вот","от","меня","о","из","ему","теперь",
++        "когда","даже","ну","вдруг","ли","если","уже","или","быть","был","до",
++        "вас","нибудь","опять","уж","вам","ведь","там","потом","себя","ничего",
++        "ей","может","они","тут","где","есть","надо","для","это","этот","эта",
++        "эти","тот","том","чем","чтобы","нас","про",
++        "the","a","an","and","or","but","if","of","to","in","on","for","with",
++        "as","is","are","was","be","this","that","it","at","by","from","you",
++        "your","we","our","can","will","all","not","have"
++    ));
++
++    public static String normalizeText(String s) {
++        if (s == null || s.isEmpty()) return "";
++        String n = Normalizer.normalize(s, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
++        n = URL.matcher(n).replaceAll(" ");
++        n = TME.matcher(n).replaceAll(" ");
++        n = MENTION.matcher(n).replaceAll(" ");
++        return WS.matcher(n).replaceAll(" ").trim();
++    }
++
++    public static List<String> tokens(String s) {
++        List<String> out = new ArrayList<>();
++        Matcher m = TOKEN.matcher(normalizeText(s));
++        while (m.find()) out.add(m.group());
++        return out;
++    }
++
++    public static Set<String> tokenSet(String s) {
++        return new HashSet<>(tokens(s));
++    }
++
++    private static List<String> significant(String s) {
++        List<String> out = new ArrayList<>();
++        for (String t : tokens(s)) {
++            if (t.length() >= 3 && !STOPWORDS.contains(t)) out.add(t);
++        }
++        return out;
++    }
++
++    public static Set<String> keywords(String s) {
++        Set<String> out = new HashSet<>();
++        for (String t : tokens(s)) {
++            if (t.length() >= 4 && !STOPWORDS.contains(t)) out.add(t);
++        }
++        return out;
++    }
++
++    public static List<String> features(String s) {
++        List<String> sig = significant(s);
++        List<String> out = new ArrayList<>(sig);
++        for (int i = 0; i + 1 < sig.size(); i++) {
++            out.add(sig.get(i) + "_" + sig.get(i + 1));
++        }
++        return out;
++    }
++
++    public static long simhashOf(String s) {
++        return Core.simhash(features(s));
++    }
++}
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+index 29f10b39..087c3533 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
+@@ -289,6 +289,11 @@ public class ApplicationLoader extends Application {
+ 
+         super.onCreate();
+ 
++        try {
++            com.tgadblock.AdFilter.init(applicationContext);
++        } catch (Throwable ignore) {
++        }
++
+         if (BuildVars.LOGS_ENABLED) {
+             FileLog.d("app start time = " + (startTime = SystemClock.elapsedRealtime()));
+             try {
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+index 2df7bd8a..c99eb519 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
+@@ -13492,6 +13492,13 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+ 
+     @Override
+     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
++        // ad-blocker: collapse messages flagged as ads to a 1px-tall, non-painting cell.
++        if (currentMessageObject != null
++                && com.tgadblock.AdFilter.getInstance() != null
++                && com.tgadblock.AdFilter.getInstance().isAd(currentMessageObject)) {
++            setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), 1);
++            return;
++        }
+         if (currentMessageObject != null && (currentMessageObject.checkLayout() || lastHeight != AndroidUtilities.displaySize.y)) {
+             inLayout = true;
+             MessageObject messageObject = currentMessageObject;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+index 78bcdbe9..9b0b347e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
+@@ -1154,6 +1154,7 @@ public class ChatActivity extends BaseFragment implements
+     public final static int OPTION_ADD_STICKER_TO_FAVORITES = 20;
+     public final static int OPTION_DELETE_STICKER_FROM_FAVORITES = 21;
+     public final static int OPTION_COPY_LINK = 22;
++    public final static int OPTION_BLOCK_AS_AD = 1001;
+     public final static int OPTION_REPORT_CHAT = 23;
+     public final static int OPTION_CANCEL_SENDING = 24;
+     public final static int OPTION_UNVOTE = 25;
+@@ -32626,6 +32627,15 @@ public class ChatActivity extends BaseFragment implements
+                 presentFragment(fragment);
+                 break;
+             }
++            case OPTION_BLOCK_AS_AD: {
++                if (selectedObject != null && com.tgadblock.AdFilter.getInstance() != null) {
++                    com.tgadblock.AdFilter.getInstance().blockItem(selectedObject);
++                    if (chatAdapter != null) {
++                        chatAdapter.notifyDataSetChanged();
++                    }
++                }
++                break;
++            }
+             case OPTION_COPY: {
+                 if (selectedObject.isDice()) {
+                     AndroidUtilities.addToClipboard(selectedObject.getDiceEmoji());
+@@ -44709,6 +44719,17 @@ public class ChatActivity extends BaseFragment implements
+             deleteIconRes = R.drawable.msg_delete;
+         }
+ 
++        // ad-blocker: offer "Block as ad" for any non-sponsored message that has text.
++        if (selectedObject != null
++                && !selectedObject.isSponsored()
++                && selectedObject.messageOwner != null
++                && selectedObject.messageOwner.message != null
++                && !selectedObject.messageOwner.message.trim().isEmpty()) {
++            items.add("Заблокировать как рекламу");
++            options.add(OPTION_BLOCK_AS_AD);
++            icons.add(R.drawable.msg_delete); // TODO: swap for a block-style icon if desired
++        }
++
+         if (type == -1) {
+             if ((selectedObject.type == MessageObject.TYPE_TEXT || selectedObject.isAnimatedEmoji() || selectedObject.isAnimatedEmojiStickers() || getMessageCaption(selectedObject, selectedObjectGroup) != null) && !noforwardsOrPaidMedia && !message.isExpiredStory()) {
+                 items.add(LocaleController.getString(R.string.Copy));

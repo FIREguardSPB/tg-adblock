@@ -1,0 +1,101 @@
+name: Build patched Telegram (ad-blocker)
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'      # every 6 hours: track the latest DrKLO release
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'DrKLO/Telegram ref (tag or commit). Empty on schedule = latest release.'
+        required: false
+        default: '9fea7264725bbac16e5bd5f18fe22d7c6e8a3117'   # base the patch is known to apply to
+
+permissions:
+  contents: write              # needed to publish releases
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo (patch + workflow)
+        uses: actions/checkout@v4
+
+      - name: Resolve upstream ref
+        id: ref
+        run: |
+          REF="${{ github.event.inputs.ref }}"
+          if [ -z "$REF" ]; then
+            REF=$(git ls-remote --tags --sort=-v:refname \
+              https://github.com/DrKLO/Telegram.git 'refs/tags/release-*' \
+              | head -1 | sed 's#.*refs/tags/##')
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "tag=tg-adblock-$(echo "$REF" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)" >> "$GITHUB_OUTPUT"
+          echo "Building upstream ref: $REF"
+
+      - name: Skip if this ref was already released
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.ref.outputs.tag }}" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.ref.outputs.tag }} already exists — nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch DrKLO/Telegram at ref
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git init upstream
+          cd upstream
+          git remote add origin https://github.com/DrKLO/Telegram.git
+          git fetch --depth 1 origin "${{ steps.ref.outputs.ref }}"
+          git checkout FETCH_HEAD
+
+      - name: Apply ad-blocker patch
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cd upstream
+          if ! git apply --3way --whitespace=nowarn ../patches/android-adblock.patch; then
+            echo "::error::Patch did not apply to ${{ steps.ref.outputs.ref }} — upstream changed the hooked files. Re-anchor patches/android-adblock.patch."
+            exit 1
+          fi
+
+      - name: Set up JDK 17
+        if: steps.check.outputs.exists == 'false'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        if: steps.check.outputs.exists == 'false'
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK / cmake / platform
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" \
+                     "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - name: Build release APK
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cd upstream
+          ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --stacktrace
+
+      - name: Publish release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(find upstream/TMessagesProj_App/build/outputs/apk/afat/release -name '*.apk' | head -1)
+          cp "$APK" "${{ steps.ref.outputs.tag }}.apk"
+          gh release create "${{ steps.ref.outputs.tag }}" \
+            "${{ steps.ref.outputs.tag }}.apk" \
+            -R "${{ github.repository }}" \
+            --title "Telegram + ad-blocker (DrKLO ${{ steps.ref.outputs.ref }})" \
+            --notes "Automatically built patched Telegram for Android (DrKLO upstream \`${{ steps.ref.outputs.ref }}\`) with the tap-to-block ad-blocker. Debug-signed with the repo keystore; sideload only."
