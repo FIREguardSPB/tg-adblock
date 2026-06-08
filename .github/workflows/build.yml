@@ -99,6 +99,8 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           cd upstream
+          # R8 on this large app needs more heap than the repo's default 4g.
+          echo "org.gradle.jvmargs=-Xmx6g -Dfile.encoding=UTF-8" >> gradle.properties
           ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --stacktrace
 
       - name: Publish release
