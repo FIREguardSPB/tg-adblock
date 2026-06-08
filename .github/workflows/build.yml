@@ -58,7 +58,13 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           cd upstream
-          if ! git apply --3way --whitespace=nowarn ../patches/android-adblock.patch; then
+          PATCH=../patches/android-adblock.patch
+          # Clean apply first (exact base); fall back to a 3-way merge to tolerate
+          # minor upstream drift; only then give up and fail loudly.
+          if git apply --whitespace=nowarn "$PATCH" \
+             || git apply --3way --whitespace=nowarn "$PATCH"; then
+            echo "Patch applied."
+          else
             echo "::error::Patch did not apply to ${{ steps.ref.outputs.ref }} — upstream changed the hooked files. Re-anchor patches/android-adblock.patch."
             exit 1
           fi
