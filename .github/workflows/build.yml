@@ -63,6 +63,14 @@ jobs:
             exit 1
           fi
 
+      - name: Free up disk space
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/share/swift \
+                      /usr/local/share/powershell /opt/hostedtoolcache/CodeQL \
+                      /usr/local/lib/android/sdk/ndk || true
+          df -h /
+
       - name: Set up JDK 17
         if: steps.check.outputs.exists == 'false'
         uses: actions/setup-java@v4
