@@ -2,6 +2,71 @@
 # base: DrKLO/Telegram @ 9fea7264725bbac16e5bd5f18fe22d7c6e8a3117
 # apply: git fetch --depth 1 origin 9fea7264725bbac16e5bd5f18fe22d7c6e8a3117 && git checkout FETCH_HEAD && git apply android-adblock.patch
 #
+diff --git a/TMessagesProj/config/debug/AndroidManifest.xml b/TMessagesProj/config/debug/AndroidManifest.xml
+index bd5fe417..2a722a52 100644
+--- a/TMessagesProj/config/debug/AndroidManifest.xml
++++ b/TMessagesProj/config/debug/AndroidManifest.xml
+@@ -22,7 +22,7 @@
+     <application
+         android:icon="@mipmap/ic_launcher"
+         android:roundIcon="@mipmap/ic_launcher_round"
+-        android:label="@string/AppNameBeta"
++        android:label="Telegram AAD"
+         android:theme="@style/Theme.TMessages.Start"
+         android:hardwareAccelerated="true"
+         android:largeHeap="true"
+diff --git a/TMessagesProj/config/debug/AndroidManifest_SDK23.xml b/TMessagesProj/config/debug/AndroidManifest_SDK23.xml
+index 6f23df28..fd471e3c 100644
+--- a/TMessagesProj/config/debug/AndroidManifest_SDK23.xml
++++ b/TMessagesProj/config/debug/AndroidManifest_SDK23.xml
+@@ -29,7 +29,7 @@
+     <application
+         android:icon="@mipmap/ic_launcher"
+         android:roundIcon="@mipmap/ic_launcher_round"
+-        android:label="@string/AppNameBeta"
++        android:label="Telegram AAD"
+         android:theme="@style/Theme.TMessages.Start"
+         android:hardwareAccelerated="true"
+         android:largeHeap="true"
+diff --git a/TMessagesProj/config/release/AndroidManifest.xml b/TMessagesProj/config/release/AndroidManifest.xml
+index 970518a5..2a722a52 100644
+--- a/TMessagesProj/config/release/AndroidManifest.xml
++++ b/TMessagesProj/config/release/AndroidManifest.xml
+@@ -22,7 +22,7 @@
+     <application
+         android:icon="@mipmap/ic_launcher"
+         android:roundIcon="@mipmap/ic_launcher_round"
+-        android:label="@string/AppName"
++        android:label="Telegram AAD"
+         android:theme="@style/Theme.TMessages.Start"
+         android:hardwareAccelerated="true"
+         android:largeHeap="true"
+diff --git a/TMessagesProj/config/release/AndroidManifest_SDK23.xml b/TMessagesProj/config/release/AndroidManifest_SDK23.xml
+index 4e250e0a..5f94c3af 100644
+--- a/TMessagesProj/config/release/AndroidManifest_SDK23.xml
++++ b/TMessagesProj/config/release/AndroidManifest_SDK23.xml
+@@ -30,7 +30,7 @@
+     <application
+         android:icon="@mipmap/ic_launcher"
+         android:roundIcon="@mipmap/ic_launcher_round"
+-        android:label="@string/AppName"
++        android:label="Telegram AAD"
+         android:theme="@style/Theme.TMessages.Start"
+         android:hardwareAccelerated="true"
+         android:largeHeap="true"
+diff --git a/TMessagesProj/config/release/AndroidManifest_standalone.xml b/TMessagesProj/config/release/AndroidManifest_standalone.xml
+index 53e0fa79..48c547f2 100644
+--- a/TMessagesProj/config/release/AndroidManifest_standalone.xml
++++ b/TMessagesProj/config/release/AndroidManifest_standalone.xml
+@@ -36,7 +36,7 @@
+     <application
+         android:icon="@mipmap/ic_launcher_sa"
+         android:roundIcon="@mipmap/ic_launcher_sa"
+-        android:label="@string/AppName"
++        android:label="Telegram AAD"
+         android:theme="@style/Theme.TMessages.Start"
+         android:hardwareAccelerated="true"
+         android:largeHeap="true"
 diff --git a/TMessagesProj/src/main/assets/adblock_default_rules.json b/TMessagesProj/src/main/assets/adblock_default_rules.json
 new file mode 100644
 index 00000000..125a739d
@@ -448,15 +513,16 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..7595490a
+index 00000000..adfd1c22
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,205 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
 +
 +import org.telegram.messenger.MessageObject;
++import org.telegram.tgnet.TLRPC;
 +
 +import java.util.HashMap;
 +import java.util.HashSet;
@@ -557,6 +623,44 @@ index 00000000..7595490a
 +        return mo.messageText != null ? mo.messageText.toString() : null;
 +    }
 +
++    // Inline-keyboard button labels. Lets us detect/block ads that carry no body
++    // text (round-video "video notes", stickers) but route to an ad via a button
++    // like "Игра в которой зарабатываю".
++    private static String buttonText(MessageObject mo) {
++        if (mo == null || mo.messageOwner == null
++                || mo.messageOwner.reply_markup == null
++                || mo.messageOwner.reply_markup.rows == null) {
++            return "";
++        }
++        StringBuilder sb = new StringBuilder();
++        for (TLRPC.TL_keyboardButtonRow row : mo.messageOwner.reply_markup.rows) {
++            if (row == null || row.buttons == null) continue;
++            for (TLRPC.KeyboardButton b : row.buttons) {
++                if (b != null && b.text != null && !b.text.isEmpty()) {
++                    if (sb.length() > 0) sb.append(' ');
++                    sb.append(b.text);
++                }
++            }
++        }
++        return sb.toString();
++    }
++
++    // Body text if present, otherwise the button labels. Messages with a body keep
++    // their previously-validated behaviour; button-only messages become detectable.
++    private static String effectiveText(MessageObject mo) {
++        String body = textOf(mo);
++        if (body != null && !body.trim().isEmpty()) {
++            return body;
++        }
++        return buttonText(mo);
++    }
++
++    // Whether the "Block as ad" menu item should be offered for this message.
++    public static boolean hasBlockableText(MessageObject mo) {
++        String t = effectiveText(mo);
++        return t != null && !t.trim().isEmpty();
++    }
++
 +    private static String senderId(MessageObject mo) {
 +        return String.valueOf(mo.getSenderId());
 +    }
@@ -572,12 +676,24 @@ index 00000000..7595490a
 +        return out;
 +    }
 +
++    // A grouped media message (album) is rendered as one cell per item, but only
++    // the caption-bearing item carries the ad text. Treat the whole group as an ad
++    // if any of its items is — so every cell in the album collapses together
++    // instead of leaving orphaned photos and overlapping siblings.
++    public synchronized boolean isAdGroup(MessageObject.GroupedMessages group) {
++        if (group == null || group.messages == null) return false;
++        for (int i = 0; i < group.messages.size(); i++) {
++            if (isAd(group.messages.get(i))) return true;
++        }
++        return false;
++    }
++
 +    public synchronized boolean isAd(MessageObject mo) {
 +        if (mo == null || rules.isEmpty()) return false;
 +        Integer key = mo.getId();
 +        Boolean cached = cache.get(key);
 +        if (cached != null) return cached;
-+        String text = textOf(mo);
++        String text = effectiveText(mo);
 +        boolean blocked = false;
 +        if (text != null && !text.trim().isEmpty()) {
 +            Core.MsgFeat f = new Core.MsgFeat();
@@ -593,7 +709,7 @@ index 00000000..7595490a
 +
 +    public synchronized void blockItem(MessageObject mo) {
 +        if (mo == null) return;
-+        String text = textOf(mo);
++        String text = effectiveText(mo);
 +        if (text == null || text.trim().isEmpty()) return;
 +        store.addRule(
 +                senderId(mo),
@@ -1001,16 +1117,214 @@ index 00000000..683ee79a
 +        return Core.simhash(features(s));
 +    }
 +}
+diff --git a/TMessagesProj/src/main/java/com/tgadblock/UpdateChecker.java b/TMessagesProj/src/main/java/com/tgadblock/UpdateChecker.java
+new file mode 100644
+index 00000000..91c8eeb7
+--- /dev/null
++++ b/TMessagesProj/src/main/java/com/tgadblock/UpdateChecker.java
+@@ -0,0 +1,166 @@
++package com.tgadblock;
++
++import android.app.Notification;
++import android.app.NotificationChannel;
++import android.app.NotificationManager;
++import android.app.PendingIntent;
++import android.content.Context;
++import android.content.Intent;
++import android.content.SharedPreferences;
++import android.net.Uri;
++import android.os.Build;
++
++import org.json.JSONArray;
++import org.json.JSONObject;
++
++import java.io.ByteArrayOutputStream;
++import java.io.InputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.nio.charset.StandardCharsets;
++import java.util.Locale;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++/**
++ * Once a day, ask GitHub for the latest published ad-blocker release and, if it
++ * is newer than this build ({@link Version#ADBLOCK_VERSION}), post a notification
++ * that opens the APK download. Everything is best-effort and swallows failures —
++ * a missing network / permission must never affect the host app.
++ *
++ * Install is intentionally NOT silent: tapping the notification opens the release
++ * APK in the browser and the user installs it like any sideload (an in-place
++ * update keeps all blocked-ad rules, since package + signing key are unchanged).
++ */
++public final class UpdateChecker {
++    private UpdateChecker() {}
++
++    private static final String PREFS = "tgadblock_update";
++    private static final String KEY_LAST = "last_check";
++    private static final long INTERVAL_MS = 24L * 60 * 60 * 1000; // once a day
++    private static final String CHANNEL_ID = "tgadblock_updates";
++    private static final int NOTIF_ID = 0x7ADB10C;
++    private static final Pattern TAG_VERSION = Pattern.compile("v(\\d+)");
++
++    public static void maybeCheck(Context ctx) {
++        if (ctx == null) return;
++        try {
++            final Context app = ctx.getApplicationContext();
++            SharedPreferences sp = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
++            long now = System.currentTimeMillis();
++            if (now - sp.getLong(KEY_LAST, 0) < INTERVAL_MS) return;
++            sp.edit().putLong(KEY_LAST, now).apply();
++            Thread t = new Thread(new Runnable() {
++                @Override public void run() {
++                    check(app);
++                }
++            }, "tgadblock-update");
++            t.setDaemon(true);
++            t.start();
++        } catch (Throwable ignore) {
++        }
++    }
++
++    private static void check(Context app) {
++        HttpURLConnection conn = null;
++        try {
++            URL url = new URL("https://api.github.com/repos/" + Version.REPO + "/releases/latest");
++            conn = (HttpURLConnection) url.openConnection();
++            conn.setRequestProperty("Accept", "application/vnd.github+json");
++            conn.setRequestProperty("User-Agent", "tg-adblock");
++            conn.setConnectTimeout(15000);
++            conn.setReadTimeout(15000);
++            if (conn.getResponseCode() != 200) return;
++            JSONObject o = new JSONObject(readAll(conn.getInputStream()));
++
++            Matcher m = TAG_VERSION.matcher(o.optString("tag_name", ""));
++            if (!m.find()) return;
++            int remote = Integer.parseInt(m.group(1));
++            if (remote <= Version.ADBLOCK_VERSION) return;
++
++            String apkUrl = null;
++            JSONArray assets = o.optJSONArray("assets");
++            if (assets != null) {
++                for (int i = 0; i < assets.length(); i++) {
++                    JSONObject a = assets.getJSONObject(i);
++                    if (a.optString("name", "").toLowerCase(Locale.ROOT).endsWith(".apk")) {
++                        apkUrl = a.optString("browser_download_url", null);
++                        break;
++                    }
++                }
++            }
++            if (apkUrl == null) {
++                apkUrl = o.optString("html_url", null);
++            }
++            postNotification(app, remote, apkUrl);
++        } catch (Throwable ignore) {
++        } finally {
++            if (conn != null) {
++                try { conn.disconnect(); } catch (Throwable ignore) {}
++            }
++        }
++    }
++
++    private static void postNotification(Context app, int remote, String url) {
++        if (url == null || url.isEmpty()) return;
++        try {
++            NotificationManager nm =
++                    (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
++            if (nm == null) return;
++            boolean ru = isRu();
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++                nm.createNotificationChannel(new NotificationChannel(CHANNEL_ID,
++                        ru ? "Обновления Telegram AAD" : "Telegram AAD updates",
++                        NotificationManager.IMPORTANCE_DEFAULT));
++            }
++
++            Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
++            view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
++                piFlags |= PendingIntent.FLAG_IMMUTABLE;
++            }
++            PendingIntent pi = PendingIntent.getActivity(app, 0, view, piFlags);
++
++            String title = ru ? "Доступна новая версия Telegram AAD"
++                              : "New Telegram AAD version available";
++            String text = ru ? ("Версия v" + remote + " — нажмите, чтобы скачать и обновить")
++                             : ("Version v" + remote + " — tap to download and update");
++
++            Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
++                    ? new Notification.Builder(app, CHANNEL_ID)
++                    : new Notification.Builder(app);
++            Notification n = b
++                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
++                    .setContentTitle(title)
++                    .setContentText(text)
++                    .setStyle(new Notification.BigTextStyle().bigText(text))
++                    .setAutoCancel(true)
++                    .setContentIntent(pi)
++                    .build();
++            nm.notify(NOTIF_ID, n);
++        } catch (Throwable ignore) {
++        }
++    }
++
++    private static boolean isRu() {
++        try {
++            org.telegram.messenger.LocaleController.LocaleInfo li =
++                    org.telegram.messenger.LocaleController.getInstance().getCurrentLocaleInfo();
++            return li != null && li.shortName != null
++                    && li.shortName.toLowerCase(Locale.ROOT).startsWith("ru");
++        } catch (Throwable ignore) {
++            return false;
++        }
++    }
++
++    private static String readAll(InputStream is) throws Exception {
++        ByteArrayOutputStream bos = new ByteArrayOutputStream();
++        byte[] buf = new byte[4096];
++        int n;
++        while ((n = is.read(buf)) > 0) {
++            bos.write(buf, 0, n);
++        }
++        return new String(bos.toByteArray(), StandardCharsets.UTF_8);
++    }
++}
+diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
+new file mode 100644
+index 00000000..5ad62eac
+--- /dev/null
++++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
+@@ -0,0 +1,19 @@
++package com.tgadblock;
++
++/**
++ * Single source of truth for the ad-blocker build version.
++ *
++ * Bump {@link #ADBLOCK_VERSION} on every published build. CI tags the GitHub
++ * release {@code tg-adblock-v<ADBLOCK_VERSION>} (it greps this constant out of
++ * the patch), and the in-app {@link UpdateChecker} compares this baked-in value
++ * to the latest release to decide whether to offer an update.
++ */
++public final class Version {
++    private Version() {}
++
++    public static final int ADBLOCK_VERSION = 1;
++    public static final String ADBLOCK_VERSION_NAME = "1.0";
++
++    /** owner/repo that publishes the signed APKs. */
++    public static final String REPO = "FIREguardSPB/tg-adblock";
++}
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
-index 29f10b39..087c3533 100644
+index 29f10b39..30d62151 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
-@@ -289,6 +289,11 @@ public class ApplicationLoader extends Application {
+@@ -289,6 +289,12 @@ public class ApplicationLoader extends Application {
  
          super.onCreate();
  
 +        try {
 +            com.tgadblock.AdFilter.init(applicationContext);
++            com.tgadblock.UpdateChecker.maybeCheck(applicationContext);
 +        } catch (Throwable ignore) {
 +        }
 +
@@ -1018,42 +1332,100 @@ index 29f10b39..087c3533 100644
              FileLog.d("app start time = " + (startTime = SystemClock.elapsedRealtime()));
              try {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
-index 2df7bd8a..c99eb519 100644
+index 2df7bd8a..977f1fbd 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
-@@ -13492,6 +13492,13 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -13492,6 +13492,19 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
  
      @Override
      protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
 +        // ad-blocker: collapse messages flagged as ads to a 1px-tall, non-painting cell.
-+        if (currentMessageObject != null
-+                && com.tgadblock.AdFilter.getInstance() != null
-+                && com.tgadblock.AdFilter.getInstance().isAd(currentMessageObject)) {
-+            setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), 1);
-+            return;
++        // For an album, test the whole group so every photo collapses together (no
++        // orphaned siblings / overlap). Collapsing also drops keyboardHeight, so inline
++        // ad buttons under the message disappear with it.
++        if (currentMessageObject != null && com.tgadblock.AdFilter.getInstance() != null) {
++            boolean adHidden = currentMessagesGroup != null
++                    ? com.tgadblock.AdFilter.getInstance().isAdGroup(currentMessagesGroup)
++                    : com.tgadblock.AdFilter.getInstance().isAd(currentMessageObject);
++            if (adHidden) {
++                setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), 1);
++                return;
++            }
 +        }
          if (currentMessageObject != null && (currentMessageObject.checkLayout() || lastHeight != AndroidUtilities.displaySize.y)) {
              inLayout = true;
              MessageObject messageObject = currentMessageObject;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+index afe20a37..0fdf69cf 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
+@@ -2610,6 +2610,21 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+             FileLog.e(e);
+         }
+ 
++        // ad-blocker: if the chat-list preview is a hidden ad, replace its text and
++        // drop the media thumbnails so the ad is not visible from the dialog list.
++        if (message != null && !message.isOutOwner()
++                && com.tgadblock.AdFilter.getInstance() != null
++                && com.tgadblock.AdFilter.getInstance().isAd(message)) {
++            boolean ru = false;
++            try {
++                LocaleController.LocaleInfo li = LocaleController.getInstance().getCurrentLocaleInfo();
++                ru = li != null && li.shortName != null && li.shortName.toLowerCase().startsWith("ru");
++            } catch (Throwable ignore) {
++            }
++            messageString = ru ? "Скрытая реклама" : "Hidden ad";
++            thumbsCount = 0;
++        }
++
+         try {
+             CharSequence messageStringFinal;
+             // Removing links and bold spans to get rid of underlining and boldness
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 78bcdbe9..9b0b347e 100644
+index 78bcdbe9..8e7e5aa2 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-@@ -1154,6 +1154,7 @@ public class ChatActivity extends BaseFragment implements
+@@ -1154,6 +1154,22 @@ public class ChatActivity extends BaseFragment implements
      public final static int OPTION_ADD_STICKER_TO_FAVORITES = 20;
      public final static int OPTION_DELETE_STICKER_FROM_FAVORITES = 21;
      public final static int OPTION_COPY_LINK = 22;
 +    public final static int OPTION_BLOCK_AS_AD = 1001;
++
++    // ad-blocker: the menu item is Russian only when the app language is Russian,
++    // otherwise English. (No string resource so the patch stays self-contained.)
++    private static String adBlockMenuLabel() {
++        try {
++            LocaleController.LocaleInfo li = LocaleController.getInstance().getCurrentLocaleInfo();
++            if (li != null && li.shortName != null
++                    && li.shortName.toLowerCase().startsWith("ru")) {
++                return "Заблокировать как рекламу";
++            }
++        } catch (Throwable ignore) {
++        }
++        return "Block as ad";
++    }
++
      public final static int OPTION_REPORT_CHAT = 23;
      public final static int OPTION_CANCEL_SENDING = 24;
      public final static int OPTION_UNVOTE = 25;
-@@ -32626,6 +32627,15 @@ public class ChatActivity extends BaseFragment implements
+@@ -32626,6 +32642,26 @@ public class ChatActivity extends BaseFragment implements
                  presentFragment(fragment);
                  break;
              }
 +            case OPTION_BLOCK_AS_AD: {
-+                if (selectedObject != null && com.tgadblock.AdFilter.getInstance() != null) {
-+                    com.tgadblock.AdFilter.getInstance().blockItem(selectedObject);
++                if (com.tgadblock.AdFilter.getInstance() != null) {
++                    // For an album, learn the rule from the caption-bearing item so the
++                    // whole group is recognised (and collapsed) afterwards.
++                    MessageObject blockTarget = selectedObject;
++                    if (selectedObjectGroup != null) {
++                        MessageObject cap = selectedObjectGroup.findCaptionMessageObject();
++                        if (cap != null) {
++                            blockTarget = cap;
++                        }
++                    }
++                    if (blockTarget != null) {
++                        com.tgadblock.AdFilter.getInstance().blockItem(blockTarget);
++                    }
 +                    if (chatAdapter != null) {
 +                        chatAdapter.notifyDataSetChanged();
 +                    }
@@ -1063,19 +1435,18 @@ index 78bcdbe9..9b0b347e 100644
              case OPTION_COPY: {
                  if (selectedObject.isDice()) {
                      AndroidUtilities.addToClipboard(selectedObject.getDiceEmoji());
-@@ -44709,6 +44719,17 @@ public class ChatActivity extends BaseFragment implements
+@@ -44709,6 +44745,16 @@ public class ChatActivity extends BaseFragment implements
              deleteIconRes = R.drawable.msg_delete;
          }
  
-+        // ad-blocker: offer "Block as ad" for any non-sponsored message that has text.
++        // ad-blocker: offer "Block as ad" for any non-sponsored message that carries
++        // text OR inline-button labels (so round-video/button-only ads are blockable).
 +        if (selectedObject != null
 +                && !selectedObject.isSponsored()
-+                && selectedObject.messageOwner != null
-+                && selectedObject.messageOwner.message != null
-+                && !selectedObject.messageOwner.message.trim().isEmpty()) {
-+            items.add("Заблокировать как рекламу");
++                && com.tgadblock.AdFilter.hasBlockableText(selectedObject)) {
++            items.add(adBlockMenuLabel());
 +            options.add(OPTION_BLOCK_AS_AD);
-+            icons.add(R.drawable.msg_delete); // TODO: swap for a block-style icon if desired
++            icons.add(R.drawable.msg_block);
 +        }
 +
          if (type == -1) {

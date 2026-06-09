@@ -23,15 +23,30 @@ jobs:
       - name: Resolve upstream ref
         id: ref
         run: |
+          # DrKLO develops on master, but their newest GitHub *tag* is stale
+          # (release-11.4.2-5469, far behind the 12.x the patch is built against).
+          # The old "latest release-* tag" logic therefore checked out an OLDER tree
+          # than the patch's base, the patch did not apply, and every scheduled run
+          # failed. Until the patch is re-anchored to a newer upstream, default
+          # scheduled/empty builds to the known-good pinned base so they reproduce a
+          # working APK (and become a no-op once that ref is released). To build a
+          # newer upstream, dispatch this workflow with an explicit ref.
+          BASE=9fea7264725bbac16e5bd5f18fe22d7c6e8a3117
           REF="${{ github.event.inputs.ref }}"
           if [ -z "$REF" ]; then
-            REF=$(git ls-remote --tags --sort=-v:refname \
-              https://github.com/DrKLO/Telegram.git 'refs/tags/release-*' \
-              | head -1 | sed 's#.*refs/tags/##')
+            REF="$BASE"
           fi
+          # Release identity is the ad-blocker patch version, NOT the upstream ref,
+          # so improving the patch on the same base still produces a new release the
+          # in-app updater can detect. ADBLOCK_VERSION is the single source of truth
+          # (com.tgadblock.Version), read straight out of the patch.
+          VER=$(grep -oE 'ADBLOCK_VERSION *= *[0-9]+' patches/android-adblock.patch \
+                | grep -oE '[0-9]+' | head -1)
+          [ -z "$VER" ] && VER=0
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          echo "tag=tg-adblock-$(echo "$REF" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)" >> "$GITHUB_OUTPUT"
-          echo "Building upstream ref: $REF"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=tg-adblock-v$VER" >> "$GITHUB_OUTPUT"
+          echo "Building upstream ref: $REF  (ad-blocker v$VER)"
 
       - name: Skip if this ref was already released
         id: check
@@ -113,5 +128,6 @@ jobs:
           gh release create "${{ steps.ref.outputs.tag }}" \
             "${{ steps.ref.outputs.tag }}.apk" \
             -R "${{ github.repository }}" \
-            --title "Telegram + ad-blocker (DrKLO ${{ steps.ref.outputs.ref }})" \
-            --notes "Automatically built patched Telegram for Android (DrKLO upstream \`${{ steps.ref.outputs.ref }}\`) with the tap-to-block ad-blocker. Debug-signed with the repo keystore; sideload only."
+            --latest \
+            --title "Telegram AAD v${{ steps.ref.outputs.version }} (DrKLO ${{ steps.ref.outputs.ref }})" \
+            --notes "Telegram AAD (Anti-AD) v${{ steps.ref.outputs.version }} — patched Telegram for Android (DrKLO upstream \`${{ steps.ref.outputs.ref }}\`) with the tap-to-block ad-blocker and a daily update check. Debug-signed with the repo keystore; sideload only. An in-place update keeps your blocked-ad rules."
