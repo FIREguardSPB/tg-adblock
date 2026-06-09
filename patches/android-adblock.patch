@@ -1291,7 +1291,7 @@ index 00000000..91c8eeb7
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..0f875a99
+index 00000000..12ae0c81
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -1308,8 +1308,8 @@ index 00000000..0f875a99
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 3;
-+    public static final String ADBLOCK_VERSION_NAME = "3.0";
++    public static final int ADBLOCK_VERSION = 2;
++    public static final String ADBLOCK_VERSION_NAME = "2.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
@@ -1331,21 +1331,6 @@ index 29f10b39..30d62151 100644
          if (BuildVars.LOGS_ENABLED) {
              FileLog.d("app start time = " + (startTime = SystemClock.elapsedRealtime()));
              try {
-diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java b/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
-index b1caaddb..4e1cb61f 100644
---- a/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
-+++ b/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
-@@ -26,8 +26,8 @@ public class BuildVars {
-     public static boolean NO_SCOPED_STORAGE = Build.VERSION.SDK_INT <= 29;
-     public static String BUILD_VERSION_STRING = BuildConfig.BUILD_VERSION_STRING;
- 
--    public static int APP_ID = 4;
--    public static String APP_HASH = "014b35b6184100b085b0d0572f9b5103";
-+    public static int APP_ID = 21724;
-+    public static String APP_HASH = "3e0cb5efcd52300aec5994fdfc5bdc16";
- 
-     // SafetyNet key for Google Identity SDK, set it to empty to disable
-     public static String SAFETYNET_KEY = "AIzaSyDqt8P-7F7CPCseMkOiVRgb1LY8RN1bvH8";
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
 index 2df7bd8a..977f1fbd 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
