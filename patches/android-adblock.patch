@@ -1291,7 +1291,7 @@ index 00000000..91c8eeb7
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..5ad62eac
+index 00000000..12ae0c81
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -1308,8 +1308,8 @@ index 00000000..5ad62eac
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 1;
-+    public static final String ADBLOCK_VERSION_NAME = "1.0";
++    public static final int ADBLOCK_VERSION = 2;
++    public static final String ADBLOCK_VERSION_NAME = "2.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
@@ -1452,3 +1452,58 @@ index 78bcdbe9..8e7e5aa2 100644
          if (type == -1) {
              if ((selectedObject.type == MessageObject.TYPE_TEXT || selectedObject.isAnimatedEmoji() || selectedObject.isAnimatedEmojiStickers() || getMessageCaption(selectedObject, selectedObjectGroup) != null) && !noforwardsOrPaidMedia && !message.isExpiredStory()) {
                  items.add(LocaleController.getString(R.string.Copy));
+diff --git a/TMessagesProj_App/build.gradle b/TMessagesProj_App/build.gradle
+index 2aa197cb..57a9e5df 100644
+--- a/TMessagesProj_App/build.gradle
++++ b/TMessagesProj_App/build.gradle
+@@ -86,6 +86,10 @@ android {
+             debuggable false
+             jniDebuggable false
+             signingConfig signingConfigs.release
++            // ad-blocker: install alongside the official Telegram (org.telegram.messenger)
++            // instead of conflicting with it. Provider authorities and custom permissions
++            // are ${applicationId}-based, so the suffix namespaces them automatically.
++            applicationIdSuffix ".aad"
+             minifyEnabled true
+             shrinkResources false
+             multiDexEnabled true
+diff --git a/TMessagesProj_App/google-services.json b/TMessagesProj_App/google-services.json
+index 640e841b..1954b0ae 100644
+--- a/TMessagesProj_App/google-services.json
++++ b/TMessagesProj_App/google-services.json
+@@ -92,6 +92,35 @@
+           ]
+         }
+       }
++    },
++    {
++      "client_info": {
++        "mobilesdk_app_id": "1:760348033671:android:aad0aad0aad0aad0aad0aa",
++        "android_client_info": {
++          "package_name": "org.telegram.messenger.aad"
++        }
++      },
++      "oauth_client": [
++        {
++          "client_id": "760348033671-2hh8ebmuflsnjoc0kldkfells9rhtfni.apps.googleusercontent.com",
++          "client_type": 3
++        }
++      ],
++      "api_key": [
++        {
++          "current_key": "AIzaSyA-t0jLPjUt2FxrA8VPK2EiYHcYcboIR6k"
++        }
++      ],
++      "services": {
++        "appinvite_service": {
++          "other_platform_oauth_client": [
++            {
++              "client_id": "760348033671-2hh8ebmuflsnjoc0kldkfells9rhtfni.apps.googleusercontent.com",
++              "client_type": 3
++            }
++          ]
++        }
++      }
+     }
+   ],
+   "configuration_version": "1"
