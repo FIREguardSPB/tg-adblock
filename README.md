@@ -25,8 +25,8 @@ Telegram AAD прячет это всё — прямо на телефоне, б
 
 ## Что умеет
 
-- 🚫 **Скрытие рекламы.** Зажми рекламный пост → **«Заблокировать как рекламу»**. Пост прячется,
-  и похожие (тот же текст / переформулированный, та же кампания) — тоже.
+- 🚫 **Скрытие рекламы.** Тапни по рекламному посту → во всплывающем меню **«Заблокировать как
+  рекламу»**. Пост прячется, и похожие (тот же текст / переформулированный, та же кампания) — тоже.
 - 📦 **Стартовый набор правил** уже встроен — типовая реклама (казино, крипта, займы, розыгрыши)
   прячется сразу после установки.
 - 🧩 **Прячет везде:** и внутри канала, и в превью списка чатов. Корректно обрабатывает альбомы
@@ -51,8 +51,9 @@ Telegram AAD прячет это всё — прямо на телефоне, б
 
 ## Как пользоваться
 
-- **Заблокировать рекламу:** зажми (долгое нажатие) рекламный пост → в меню выбери
+- **Заблокировать рекламу:** **тапни** по рекламному посту → во всплывающем меню выбери
   **«Заблокировать как рекламу»**. Скроется и он, и похожие.
+  (Если *зажать* пост — он просто выделится для пересылки, это не то.)
 - **Дубликаты новостей:** ничего делать не нужно — прячутся сами.
 - **Режим призрака:** **Настройки → Конфиденциальность → «Режим призрака»** (переключатель внизу).
   Включил — твои прочтения/онлайн/«печатает» не видны; выключил — всё как обычно.
@@ -70,8 +71,8 @@ device, with no servers and no tracking.
 
 ## Features
 
-- 🚫 **Hide ads.** Long-press an ad post → **"Block as ad"**. That post is hidden, and similar ones
-  (same / reworded text, same campaign) are hidden too.
+- 🚫 **Hide ads.** Tap an ad post → **"Block as ad"** in the popup menu. That post is hidden, and
+  similar ones (same / reworded text, same campaign) are hidden too.
 - 📦 **Bundled starter ruleset** — common ads (casino, crypto, loans, giveaways) are hidden right
   after install.
 - 🧩 **Hidden everywhere:** inside the channel *and* in the chat-list preview. Handles albums
@@ -96,7 +97,8 @@ device, with no servers and no tracking.
 
 ## How to use
 
-- **Block an ad:** long-press the ad post → choose **"Block as ad"**. It and similar posts disappear.
+- **Block an ad:** **tap** the ad post → choose **"Block as ad"** from the popup menu. It and similar
+  posts disappear. (*Long-pressing* a post just selects it for forwarding — not what you want.)
 - **Duplicate news:** nothing to do — hidden automatically.
 - **Ghost mode:** **Settings → Privacy and Security → "Ghost mode"** (toggle at the bottom). On =
   your reads/online/typing are hidden; off = stock behavior.
