@@ -54,14 +54,19 @@ Telegram AAD прячет это всё — прямо на телефоне, б
 - **Заблокировать рекламу:** **тапни** по рекламному посту → во всплывающем меню выбери
   **«Заблокировать как рекламу»**. Скроется и он, и похожие.
 - **Дубликаты новостей:** ничего делать не нужно — прячутся сами.
-- **Режим призрака:** **Настройки → Конфиденциальность → «Режим призрака»** (переключатель внизу).
+- **Режим призрака:** быстрый переключатель в меню **«три точки»** на главном экране
+  («Режим призрака: вкл/выкл»), либо **Настройки → Конфиденциальность → «Режим призрака»**.
   Включил — твои прочтения/онлайн/«печатает» не видны; выключил — всё как обычно.
+  (Учти: пока Ghost включён, твои прочтения не уходят на сервер, поэтому на других устройствах,
+  например в Desktop, чаты будут висеть непрочитанными — это и есть его смысл.)
 
 > **Примечания:**
 > - Некоторые посты прячутся **не мгновенно** — иногда скрытие происходит спустя пару секунд или
 >   при следующей прокрутке ленты. Это нормально.
 > - Канал с дубликатом может всё равно подняться вверх в списке по времени (Telegram сортирует по
 >   времени сообщения) — но **значка «новое» и уведомления не будет**.
+> - Скрытая реклама и дубли помечаются **прочитанными** (на сервере), чтобы не висели
+>   непрочитанными на других твоих устройствах (Desktop и т.п.).
 
 ---
 
@@ -102,14 +107,18 @@ device, with no servers and no tracking.
 - **Block an ad:** **tap** the ad post → choose **"Block as ad"** from the popup menu. It and similar
   posts disappear.
 - **Duplicate news:** nothing to do — hidden automatically.
-- **Ghost mode:** **Settings → Privacy and Security → "Ghost mode"** (toggle at the bottom). On =
-  your reads/online/typing are hidden; off = stock behavior.
+- **Ghost mode:** a quick toggle in the **three-dots menu** on the main screen ("Ghost mode: on/off"),
+  or **Settings → Privacy and Security → "Ghost mode"**. On = your reads/online/typing are hidden;
+  off = stock behavior. (Note: while Ghost is on, your reads aren't sent to the server, so chats stay
+  unread on your other devices like Desktop — that's the whole point.)
 
 > **Notes:**
 > - Some posts are **not hidden instantly** — hiding may happen a couple of seconds later or on the
 >   next scroll of the feed. That's expected.
 > - A channel with a duplicate may still rise in the chat list by time (Telegram sorts by message
 >   time) — but there will be **no "new" badge and no notification**.
+> - Hidden ads and duplicates are marked **read** (on the server) so they don't stay unread on your
+>   other devices (Desktop, etc.).
 
 ---
 

@@ -514,10 +514,10 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..c8513ad4
+index 00000000..01f256b8
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,432 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -719,7 +719,7 @@ index 00000000..c8513ad4
 +    // thread). Filters on-thread, then does SimHash + dup-decision + SQLite off-thread.
 +    // Deciding here (not just at render) lets notifications and the chat-list unread
 +    // badge be suppressed for a duplicate the moment it arrives.
-+    public void journalArrivals(java.util.ArrayList<MessageObject> messages) {
++    public void journalArrivals(java.util.ArrayList<MessageObject> messages, int account) {
 +        if (messages == null || messages.isEmpty()) return;
 +        final int minTokens = config == null ? 8 : config.dupMinTokens;
 +        final java.util.ArrayList<Object[]> batch = new java.util.ArrayList<>();
@@ -731,20 +731,21 @@ index 00000000..c8513ad4
 +            String text = effectiveText(mo);
 +            if (text == null || text.trim().isEmpty()) continue;
 +            if (Normalize.tokenSet(text).size() < minTokens) continue;
-+            batch.add(new Object[]{mo.getDialogId() + ":" + mo.getId(), mo.getDialogId(), text, mo.messageOwner.date});
++            boolean ad = isAd(mo); // decided here while we still hold the MessageObject (sender-aware)
++            batch.add(new Object[]{mo.getDialogId() + ":" + mo.getId(), mo.getDialogId(), text, mo.messageOwner.date, ad, mo.getId()});
 +        }
 +        if (batch.isEmpty()) return;
 +        journalExec.execute(() -> {
 +            for (Object[] row : batch) {
 +                try {
-+                    journalOne((String) row[0], (Long) row[1], (String) row[2], (Integer) row[3]);
++                    journalOne(account, (String) row[0], (Long) row[1], (String) row[2], (Integer) row[3], (Boolean) row[4], (Integer) row[5]);
 +                } catch (Throwable ignore) {
 +                }
 +            }
 +        });
 +    }
 +
-+    private synchronized void journalOne(String key, long did, String text, int date) {
++    private synchronized void journalOne(int account, String key, long did, String text, int date, boolean ad, int msgId) {
 +        if (config == null) return;
 +        long sh = Normalize.simhashOf(text);
 +        Set<String> kw = Normalize.keywords(text);
@@ -788,6 +789,23 @@ index 00000000..c8513ad4
 +            }
 +        }
 +        dupCache.put(key, dup);
++        // Mark hidden ads/duplicates read on the SERVER so they don't show as unread on
++        // other devices (e.g. Desktop). Channel reads don't expose us, so this bypasses
++        // Ghost mode. Note: Telegram marks read "up to" this id, so older unread posts in
++        // the same channel are marked read too.
++        if ((ad || dup) && config.markHiddenRead) {
++            markReadOnServer(account, did, msgId);
++        }
++    }
++
++    private void markReadOnServer(int account, long did, int msgId) {
++        if (did >= 0 || msgId <= 0) return; // channels only
++        try {
++            org.telegram.messenger.MessagesController
++                    .getInstance(account)
++                    .tgadMarkChannelReadOnServer(did, msgId);
++        } catch (Throwable ignore) {
++        }
 +    }
 +
 +    // Side-effect-free check for the chat-list / notifications: is this post a known
@@ -858,6 +876,19 @@ index 00000000..c8513ad4
 +        return t != null && !t.trim().isEmpty();
 +    }
 +
++    // In an album, the caption sits on one group member; the others have no text. So
++    // offer "Block as ad" if ANY member of the tapped group carries blockable text —
++    // otherwise tapping a photo without the caption shows no menu item.
++    public static boolean hasBlockableTextInGroup(MessageObject.GroupedMessages group) {
++        if (group == null || group.messages == null) return false;
++        MessageObject cap = group.findCaptionMessageObject();
++        if (cap != null && hasBlockableText(cap)) return true;
++        for (int i = 0; i < group.messages.size(); i++) {
++            if (hasBlockableText(group.messages.get(i))) return true;
++        }
++        return false;
++    }
++
 +    private static String senderId(MessageObject mo) {
 +        return String.valueOf(mo.getSenderId());
 +    }
@@ -921,10 +952,10 @@ index 00000000..c8513ad4
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdStore.java b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
 new file mode 100644
-index 00000000..42d5186d
+index 00000000..208fadb5
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,275 @@
 +package com.tgadblock;
 +
 +import android.content.ContentValues;
@@ -1000,6 +1031,7 @@ index 00000000..42d5186d
 +        setDefaultMeta(db, "dup_min_tokens", "8");
 +        setDefaultMeta(db, "dup_seen_max_age_days", "14");
 +        setDefaultMeta(db, "dup_hidden_max_age_days", "180");
++        setDefaultMeta(db, "mark_hidden_read", "1");
 +        ensureHiddenDupsSchema(db);
 +    }
 +
@@ -1074,6 +1106,7 @@ index 00000000..42d5186d
 +                    case "dup_min_tokens": cfg.dupMinTokens = Integer.parseInt(v); break;
 +                    case "dup_seen_max_age_days": cfg.dupSeenMaxAgeDays = Integer.parseInt(v); break;
 +                    case "dup_hidden_max_age_days": cfg.dupHiddenMaxAgeDays = Integer.parseInt(v); break;
++                    case "mark_hidden_read": cfg.markHiddenRead = !"0".equals(v); break;
 +                    default: break;
 +                }
 +            }
@@ -1200,10 +1233,10 @@ index 00000000..42d5186d
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Core.java b/TMessagesProj/src/main/java/com/tgadblock/Core.java
 new file mode 100644
-index 00000000..56c2c750
+index 00000000..2194a131
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Core.java
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,153 @@
 +package com.tgadblock;
 +
 +import java.util.List;
@@ -1271,6 +1304,7 @@ index 00000000..56c2c750
 +        public int dupMinTokens = 8;       // skip messages shorter than this (avoid hiding short posts)
 +        public int dupSeenMaxAgeDays = 14; // prune the seen-journal older than this
 +        public int dupHiddenMaxAgeDays = 180; // prune persisted hide-decisions older than this
++        public boolean markHiddenRead = true; // mark hidden ads/dups read on the server (sync to desktop)
 +    }
 +
 +    public static final class Rule {
@@ -1630,7 +1664,7 @@ index 00000000..91c8eeb7
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..c7eab914
+index 00000000..0c8bfee2
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -1647,8 +1681,8 @@ index 00000000..c7eab914
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 4;
-+    public static final String ADBLOCK_VERSION_NAME = "4.0";
++    public static final int ADBLOCK_VERSION = 5;
++    public static final String ADBLOCK_VERSION_NAME = "5.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
@@ -1671,7 +1705,7 @@ index fc43c648..569248cd 100644
              FileLog.d("app start time = " + (startTime = SystemClock.elapsedRealtime()));
              try {
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index 622adb0f..91715368 100644
+index 622adb0f..d11ac989 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 @@ -10237,7 +10237,7 @@ public class MessagesController extends BaseController implements NotificationCe
@@ -1724,7 +1758,41 @@ index 622adb0f..91715368 100644
          if (task.replyId != 0 && task.monoForumPeerId == 0) {
              TLRPC.TL_messages_readDiscussion req = new TLRPC.TL_messages_readDiscussion();
              req.msg_id = (int) task.replyId;
-@@ -14332,6 +14336,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14304,6 +14308,33 @@ public class MessagesController extends BaseController implements NotificationCe
+         }
+     }
+ 
++    // ad-blocker: mark a broadcast channel read up to maxId DIRECTLY on the server,
++    // bypassing Ghost mode (a channel read doesn't reveal who read — only the channel's
++    // total view count does, and that's gated separately). Keeps hidden ads/duplicates
++    // from showing up as unread on other devices (e.g. Telegram Desktop).
++    public void tgadMarkChannelReadOnServer(long dialogId, int maxId) {
++        if (dialogId >= 0 || maxId <= 0) {
++            return;
++        }
++        final long channelId = -dialogId;
++        AndroidUtilities.runOnUIThread(() -> {
++            try {
++                TLRPC.Chat chat = getChat(channelId);
++                if (!ChatObject.isChannel(chat) || chat.megagroup) {
++                    return; // broadcast channels only
++                }
++                TLRPC.TL_channels_readHistory req = new TLRPC.TL_channels_readHistory();
++                req.channel = getInputChannel(channelId);
++                if (req.channel == null) {
++                    return;
++                }
++                req.max_id = maxId;
++                getConnectionsManager().sendRequest(req, (response, error) -> {});
++            } catch (Throwable ignore) {
++            }
++        });
++    }
++
+     public void markDialogAsReadNow(long dialogId, long replyId) {
+         Utilities.stageQueue.postRunnable(() -> {
+             if (replyId != 0) {
+@@ -14332,6 +14363,7 @@ public class MessagesController extends BaseController implements NotificationCe
              return;
          }
          getMessagesStorage().resetMentionsCount(dialogId, topicId, 0);
@@ -1732,7 +1800,7 @@ index 622adb0f..91715368 100644
          TLRPC.TL_messages_readMentions req = new TLRPC.TL_messages_readMentions();
          req.peer = getInputPeer(dialogId);
          if (topicId != 0) {
-@@ -20829,6 +20834,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -20829,6 +20861,7 @@ public class MessagesController extends BaseController implements NotificationCe
              topicsController.markAllReactionsAsRead(-dialogId, topicId);
          }
          getMessagesStorage().updateUnreadReactionsCount(dialogId, topicId, 0);
@@ -1740,7 +1808,7 @@ index 622adb0f..91715368 100644
          TLRPC.TL_messages_readReactions req = new TLRPC.TL_messages_readReactions();
          req.peer = getInputPeer(dialogId);
  
-@@ -20844,6 +20850,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -20844,6 +20877,7 @@ public class MessagesController extends BaseController implements NotificationCe
          getConnectionsManager().sendRequest(req, (response, error) -> {
  
          });
@@ -1748,14 +1816,14 @@ index 622adb0f..91715368 100644
          NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.updateInterfaces, UPDATE_MASK_REACTIONS_READ);
      }
  
-@@ -21170,6 +21177,11 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -21170,6 +21204,11 @@ public class MessagesController extends BaseController implements NotificationCe
          if (mode == ChatActivity.MODE_QUICK_REPLIES) {
              QuickRepliesController.getInstance(currentAccount).checkLocalMessages(messages);
          }
 +        // ad-blocker: journal arriving channel posts so cross-channel duplicates are
 +        // detected even in channels you never opened.
 +        if (mode == ChatActivity.MODE_DEFAULT && com.tgadblock.AdFilter.getInstance() != null) {
-+            try { com.tgadblock.AdFilter.getInstance().journalArrivals(messages); } catch (Throwable ignore) {}
++            try { com.tgadblock.AdFilter.getInstance().journalArrivals(messages, currentAccount); } catch (Throwable ignore) {}
 +        }
          getNotificationCenter().postNotificationName(NotificationCenter.didReceiveNewMessages, dialogId, messages, scheduled, mode);
  
@@ -1920,7 +1988,7 @@ index fa76337a..f93aaf4a 100644
              CharSequence messageStringFinal;
              // Removing links and bold spans to get rid of underlining and boldness
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index c4bb90c5..ff371f18 100644
+index c4bb90c5..0af21943 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 @@ -1213,6 +1213,22 @@ public class ChatActivity extends BaseFragment implements
@@ -1973,15 +2041,18 @@ index c4bb90c5..ff371f18 100644
              case OPTION_COPY: {
                  if (selectedObject.isDice()) {
                      AndroidUtilities.addToClipboard(selectedObject.getDiceEmoji());
-@@ -45240,6 +45276,16 @@ public class ChatActivity extends BaseFragment implements
+@@ -45240,6 +45276,19 @@ public class ChatActivity extends BaseFragment implements
              deleteIconRes = R.drawable.msg_delete;
          }
  
 +        // ad-blocker: offer "Block as ad" for any non-sponsored message that carries
 +        // text OR inline-button labels (so round-video/button-only ads are blockable).
++        // For albums, check the whole group so tapping any photo (not just the
++        // caption-bearing one) still offers the item.
 +        if (selectedObject != null
 +                && !selectedObject.isSponsored()
-+                && com.tgadblock.AdFilter.hasBlockableText(selectedObject)) {
++                && (com.tgadblock.AdFilter.hasBlockableText(selectedObject)
++                    || com.tgadblock.AdFilter.hasBlockableTextInGroup(selectedObjectGroup))) {
 +            items.add(adBlockMenuLabel());
 +            options.add(OPTION_BLOCK_AS_AD);
 +            icons.add(R.drawable.msg_block);
@@ -1990,6 +2061,37 @@ index c4bb90c5..ff371f18 100644
          if (type == -1) {
              if ((selectedObject.type == MessageObject.TYPE_TEXT || selectedObject.type == MessageObject.TYPE_ARTICLE || selectedObject.isAnimatedEmoji() || selectedObject.isAnimatedEmojiStickers() || getMessageCaption(selectedObject, selectedObjectGroup) != null) && !noforwardsOrPaidMedia && !message.isExpiredStory()) {
                  items.add(LocaleController.getString(R.string.Copy));
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+index 74fc75ab..41e0f5a3 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
+@@ -13411,6 +13411,26 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+                 args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
+                 presentFragment(new ChatActivity(args));
+             });
++            // ad-blocker: quick Ghost mode toggle right in the main overflow menu.
++            boolean ghRu;
++            try {
++                LocaleController.LocaleInfo li = LocaleController.getInstance().getCurrentLocaleInfo();
++                ghRu = li != null && li.shortName != null && li.shortName.toLowerCase().startsWith("ru");
++            } catch (Throwable e) {
++                ghRu = false;
++            }
++            final boolean ghRuF = ghRu;
++            String ghLabel = (ghRuF ? "Режим призрака: " : "Ghost mode: ")
++                    + (SharedConfig.ghostMode ? (ghRuF ? "вкл" : "on") : (ghRuF ? "выкл" : "off"));
++            io.add(R.drawable.msg_block, ghLabel, () -> {
++                SharedConfig.toggleGhostMode();
++                try {
++                    String m = (ghRuF ? "Режим призрака: " : "Ghost mode: ")
++                            + (SharedConfig.ghostMode ? (ghRuF ? "включён" : "enabled") : (ghRuF ? "выключен" : "disabled"));
++                    android.widget.Toast.makeText(ApplicationLoader.applicationContext, m, android.widget.Toast.LENGTH_SHORT).show();
++                } catch (Throwable ignore) {
++                }
++            });
+             if (ApplicationLoader.applicationLoaderInstance != null) {
+                 ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
+             }
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PrivacySettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/PrivacySettingsActivity.java
 index 6ce417f1..7807fcd6 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/PrivacySettingsActivity.java
