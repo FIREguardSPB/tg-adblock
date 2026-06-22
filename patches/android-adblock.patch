@@ -514,10 +514,10 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..01f256b8
+index 00000000..336b9f4c
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,446 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -552,6 +552,8 @@ index 00000000..01f256b8
 +    private final Map<String, Boolean> dupCache = new HashMap<>();
 +    // persistent hide-decisions: a hidden dup stays hidden after journal rows are pruned
 +    private final Set<String> hiddenDups = new HashSet<>();
++    // per-dialog highest msgId already marked read on the server (throttles render-time marking)
++    private final Map<Long, Integer> lastMarkedRead = new HashMap<>();
 +    // off-UI journaling of arriving posts (SimHash + SQLite insert)
 +    private final java.util.concurrent.ExecutorService journalExec =
 +            java.util.concurrent.Executors.newSingleThreadExecutor();
@@ -806,6 +808,18 @@ index 00000000..01f256b8
 +                    .tgadMarkChannelReadOnServer(did, msgId);
 +        } catch (Throwable ignore) {
 +        }
++    }
++
++    // Called from the cell when an ad/duplicate is hidden at render time, so posts that
++    // were already in the channel (not just freshly-arrived ones) get marked read too.
++    // Throttled per-dialog: only sends when the hidden id advances past what we sent.
++    public synchronized void markReadForHidden(int account, long did, int msgId) {
++        if (config == null || !config.markHiddenRead) return;
++        if (did >= 0 || msgId <= 0) return; // channels only
++        Integer last = lastMarkedRead.get(did);
++        if (last != null && msgId <= last) return;
++        lastMarkedRead.put(did, msgId);
++        markReadOnServer(account, did, msgId);
 +    }
 +
 +    // Side-effect-free check for the chat-list / notifications: is this post a known
@@ -1664,7 +1678,7 @@ index 00000000..91c8eeb7
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..0c8bfee2
+index 00000000..800e42cc
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -1681,8 +1695,8 @@ index 00000000..0c8bfee2
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 5;
-+    public static final String ADBLOCK_VERSION_NAME = "5.0";
++    public static final int ADBLOCK_VERSION = 6;
++    public static final String ADBLOCK_VERSION_NAME = "6.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
@@ -1889,10 +1903,10 @@ index 63a75772..8eb73bf8 100644
          fastWallpaperDisabled = !fastWallpaperDisabled;
          SharedPreferences preferences = MessagesController.getGlobalMainSettings();
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
-index 6a24ff08..5e35f35c 100644
+index 6a24ff08..db44f051 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
-@@ -13605,6 +13605,22 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -13605,6 +13605,30 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
  
      @Override
      protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
@@ -1909,13 +1923,21 @@ index 6a24ff08..5e35f35c 100644
 +                    : (com.tgadblock.AdFilter.getInstance().isAd(currentMessageObject)
 +                        || com.tgadblock.AdFilter.getInstance().isDuplicate(currentMessageObject)));
 +        if (tgadHidden) {
++            // mark the hidden ad/duplicate read on the server too, so it doesn't stay
++            // unread on other devices (covers posts already in the channel, and Ghost
++            // mode where normal reads aren't sent). Throttled per-dialog inside AdFilter.
++            try {
++                com.tgadblock.AdFilter.getInstance().markReadForHidden(currentAccount,
++                        currentMessageObject.getDialogId(), currentMessageObject.getId());
++            } catch (Throwable ignore) {
++            }
 +            setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), 1);
 +            return;
 +        }
          if (currentMessageObject != null && (currentMessageObject.checkLayout() || lastHeight != AndroidUtilities.displaySize.y)) {
              inLayout = true;
              MessageObject messageObject = currentMessageObject;
-@@ -13629,6 +13645,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -13629,6 +13653,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
          );
      }
  
@@ -1925,7 +1947,7 @@ index 6a24ff08..5e35f35c 100644
      private int additionalPaddingHeight;
  
      public int getAdditionalPaddingHeight() {
-@@ -14211,6 +14230,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -14211,6 +14238,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawContent(Canvas canvas, boolean preview) {
@@ -1935,7 +1957,31 @@ index 6a24ff08..5e35f35c 100644
          if (preview != (currentMessageObject != null && currentMessageObject.preview)) {
              return;
          }
-@@ -19955,6 +19977,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -15373,6 +15403,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawLinkPreview(Canvas canvas, float alpha) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         if (!currentMessageObject.isSponsored() && !currentMessageObject.isUnsupported() && !hasLinkPreview && !hasGamePreview && !hasInvoicePreview) {
+             return;
+         }
+@@ -16094,6 +16125,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawFactCheck(Canvas canvas, float alpha) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         if (currentPosition != null && !currentPosition.last) {
+             return;
+         }
+@@ -16177,6 +16209,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawFactCheckText(Canvas canvas, float alpha) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         if (currentPosition != null && !currentPosition.last) {
+             return;
+         }
+@@ -19955,6 +19988,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
          drawInternal(canvas);
      }
      public void drawInternal(Canvas canvas) {
@@ -1945,6 +1991,113 @@ index 6a24ff08..5e35f35c 100644
          if (currentMessageObject == null) {
              return;
          }
+@@ -20636,6 +20672,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawCommentButton(Canvas canvas, float alpha) {
++        if (tgadHidden) {
++            return; // ad-blocker: hidden cell paints nothing
++        }
+         if (drawSideButton != 3) {
+             return;
+         }
+@@ -20789,6 +20828,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawOutboundsContent(Canvas canvas) {
++        if (tgadHidden) {
++            return; // ad-blocker: hidden cell — no bot buttons / out-of-bounds content
++        }
+         if (channelRecommendationsCell != null && currentMessageObject != null && currentMessageObject.type == MessageObject.TYPE_JOINED_CHANNEL) {
+             channelRecommendationsCell.draw(canvas);
+             return;
+@@ -21130,6 +21172,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawAnimatedEmojis(Canvas canvas, float alpha) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         drawAnimatedEmojiMessageText(canvas, alpha);
+         if (shouldDrawCaptionLayout()) {
+             drawAnimatedEmojiCaption(canvas, alpha);
+@@ -21266,6 +21309,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawAnimatedEmojiCaption(Canvas canvas, float alpha) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         if (captionLayout == null) {
+             return;
+         }
+@@ -21303,10 +21347,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawSideButton(Canvas canvas) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         drawSideButton(canvas, false);
+     }
+ 
+     public void drawSideButton(Canvas canvas, boolean fromQuickShare) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         if (hideSideButtonByQuickShare && !fromQuickShare || drawSideButton == 0) {
+             return;
+         }
+@@ -21471,6 +21517,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+ 
+     private SummaryIcon summarizeIcon;
+     public void drawSummarizeButton(Canvas canvas) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         summarizeButtonX = sideStartX;
+         summarizeButtonY = getPaddingTop() + dp(8);
+         summarizeButtonY = Math.max(Math.min(-childPosition2 + dp(4), sideStartY - dp(42)), summarizeButtonY);
+@@ -21684,6 +21731,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawNamesLayout(Canvas canvas, float alpha) {
++        if (tgadHidden) {
++            return; // ad-blocker: hidden cell paints nothing
++        }
+         long newAnimationTime = SystemClock.elapsedRealtime();
+         long dt = newAnimationTime - lastNamesAnimationTime;
+         if (dt > 17) {
+@@ -22826,6 +22876,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawCaptionLayout(Canvas canvas, boolean selectionOnly, float alpha) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         if (animatedEmojiStack != null && !(canvas instanceof SizeNotifierFrameLayout.SimplerCanvas) && (captionLayout != null || transitionParams.animateOutCaptionLayout != null)) {
+             animatedEmojiStack.clearPositions();
+         }
+@@ -22846,6 +22897,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawCommentLayout(Canvas canvas, float alpha) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         int x;
+         if (mediaBackground) {
+             x = backgroundDrawableLeft + dp(12) + getExtraTextX();
+@@ -23136,6 +23188,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawReactionsLayout(Canvas canvas, float alpha, Integer only) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         if (isRoundVideo) {
+             reactionsLayoutInBubble.drawServiceShaderBackground = 1f - getVideoTranscriptionProgress();
+         }
+@@ -23485,6 +23538,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawTime(Canvas canvas, float alpha, boolean fromParent) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         if (!drawFromPinchToZoom && delegate != null && delegate.getPinchToZoomHelper() != null && delegate.getPinchToZoomHelper().isInOverlayModeFor(this) && shouldDrawTimeOnMedia()) {
+             return;
+         }
+@@ -28828,6 +28882,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawVideoTimestamps(Canvas canvas, int color) {
++        if (tgadHidden) { return; } // ad-blocker: hidden cell paints nothing
+         if (currentMessageObject == null || currentMessageObject.isLivePhoto() || controlsAlpha <= 0 || !photoImage.getVisible()) return;
+         float progress;
+         if (!currentMessageObject.openedInViewer && currentMessageObject.getVideoStartsTimestamp() != -1) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
 index fa76337a..f93aaf4a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
