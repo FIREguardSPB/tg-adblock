@@ -53,13 +53,15 @@ Telegram AAD прячет это всё — прямо на телефоне, б
 
 - **Заблокировать рекламу:** **тапни** по рекламному посту → во всплывающем меню выбери
   **«Заблокировать как рекламу»**. Скроется и он, и похожие.
-  (Если *зажать* пост — он просто выделится для пересылки, это не то.)
 - **Дубликаты новостей:** ничего делать не нужно — прячутся сами.
 - **Режим призрака:** **Настройки → Конфиденциальность → «Режим призрака»** (переключатель внизу).
   Включил — твои прочтения/онлайн/«печатает» не видны; выключил — всё как обычно.
 
-> Примечание: канал с дубликатом может всё равно подняться вверх в списке по времени (Telegram
-> сортирует по времени сообщения) — но **значка «новое» и уведомления не будет**.
+> **Примечания:**
+> - Некоторые посты прячутся **не мгновенно** — иногда скрытие происходит спустя пару секунд или
+>   при следующей прокрутке ленты. Это нормально.
+> - Канал с дубликатом может всё равно подняться вверх в списке по времени (Telegram сортирует по
+>   времени сообщения) — но **значка «новое» и уведомления не будет**.
 
 ---
 
@@ -98,13 +100,16 @@ device, with no servers and no tracking.
 ## How to use
 
 - **Block an ad:** **tap** the ad post → choose **"Block as ad"** from the popup menu. It and similar
-  posts disappear. (*Long-pressing* a post just selects it for forwarding — not what you want.)
+  posts disappear.
 - **Duplicate news:** nothing to do — hidden automatically.
 - **Ghost mode:** **Settings → Privacy and Security → "Ghost mode"** (toggle at the bottom). On =
   your reads/online/typing are hidden; off = stock behavior.
 
-> Note: a channel with a duplicate may still rise in the chat list by time (Telegram sorts by message
-> time) — but there will be **no "new" badge and no notification**.
+> **Notes:**
+> - Some posts are **not hidden instantly** — hiding may happen a couple of seconds later or on the
+>   next scroll of the feed. That's expected.
+> - A channel with a duplicate may still rise in the chat list by time (Telegram sorts by message
+>   time) — but there will be **no "new" badge and no notification**.
 
 ---
 
