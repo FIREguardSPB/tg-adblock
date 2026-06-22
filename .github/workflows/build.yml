@@ -8,7 +8,7 @@ on:
       ref:
         description: 'DrKLO/Telegram ref (tag or commit). Empty on schedule = latest release.'
         required: false
-        default: '9fea7264725bbac16e5bd5f18fe22d7c6e8a3117'   # base the patch is known to apply to
+        default: '9b50143d8896d255d03155598937e4f3e28afd86'   # base the patch is known to apply to (12.8.1)
 
 permissions:
   contents: write              # needed to publish releases
@@ -31,7 +31,7 @@ jobs:
           # scheduled/empty builds to the known-good pinned base so they reproduce a
           # working APK (and become a no-op once that ref is released). To build a
           # newer upstream, dispatch this workflow with an explicit ref.
-          BASE=9fea7264725bbac16e5bd5f18fe22d7c6e8a3117
+          BASE=9b50143d8896d255d03155598937e4f3e28afd86
           REF="${{ github.event.inputs.ref }}"
           if [ -z "$REF" ]; then
             REF="$BASE"
@@ -82,6 +82,26 @@ jobs:
           else
             echo "::error::Patch did not apply to ${{ steps.ref.outputs.ref }} — upstream changed the hooked files. Re-anchor patches/android-adblock.patch."
             exit 1
+          fi
+
+      - name: Inject private api_id/api_hash from secrets
+        if: steps.check.outputs.exists == 'false'
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: |
+          # Keep the private key OUT of the repo: the patch ships DrKLO's default
+          # api_id=4 (rate-limited), and we swap in the real key here from secrets.
+          F=upstream/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+          if [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ]; then
+            sed -i "s/public static int APP_ID = 4;/public static int APP_ID = ${TG_API_ID};/" "$F"
+            sed -i "s|public static String APP_HASH = \"014b35b6184100b085b0d0572f9b5103\";|public static String APP_HASH = \"${TG_API_HASH}\";|" "$F"
+            if grep -q "APP_ID = 4;" "$F"; then
+              echo "::error::Failed to inject APP_ID — BuildVars.java default line not found (upstream changed it)."; exit 1
+            fi
+            echo "Injected private api credentials from secrets."
+          else
+            echo "::warning::TG_API_ID/TG_API_HASH secrets not set — building with default api_id=4 (login will be rate-limited)."
           fi
 
       - name: Free up disk space

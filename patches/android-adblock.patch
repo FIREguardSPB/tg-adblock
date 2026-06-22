@@ -1,6 +1,7 @@
-# DrKLO/Telegram (Android) ad-blocker patch
-# base: DrKLO/Telegram @ 9fea7264725bbac16e5bd5f18fe22d7c6e8a3117
-# apply: git fetch --depth 1 origin 9fea7264725bbac16e5bd5f18fe22d7c6e8a3117 && git checkout FETCH_HEAD && git apply android-adblock.patch
+# DrKLO/Telegram (Android) ad-blocker patch — "Telegram AAD"
+# base: DrKLO/Telegram @ 9b50143d8896d255d03155598937e4f3e28afd86  (12.8.1, build 6916)
+# apply: git fetch --depth 1 origin 9b50143d8896d255d03155598937e4f3e28afd86 && git checkout FETCH_HEAD && git apply android-adblock.patch
+# note: api_id/api_hash are injected at build time from CI secrets (TG_API_ID/TG_API_HASH); not in this patch.
 #
 diff --git a/TMessagesProj/config/debug/AndroidManifest.xml b/TMessagesProj/config/debug/AndroidManifest.xml
 index bd5fe417..2a722a52 100644
@@ -513,10 +514,10 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..adfd1c22
+index 00000000..c8513ad4
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,401 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -545,6 +546,15 @@ index 00000000..adfd1c22
 +    private List<Core.Rule> rules;
 +    private Core.Config config;
 +    private final Map<Integer, Boolean> cache = new HashMap<>();
++    // cross-channel duplicate-news journal (bounded, persisted)
++    private static final int SEEN_CAP = 2500;
++    private final java.util.LinkedHashMap<String, Core.SeenPost> seen = new java.util.LinkedHashMap<>();
++    private final Map<String, Boolean> dupCache = new HashMap<>();
++    // persistent hide-decisions: a hidden dup stays hidden after journal rows are pruned
++    private final Set<String> hiddenDups = new HashSet<>();
++    // off-UI journaling of arriving posts (SimHash + SQLite insert)
++    private final java.util.concurrent.ExecutorService journalExec =
++            java.util.concurrent.Executors.newSingleThreadExecutor();
 +
 +    private static final Pattern DOMAIN = Pattern.compile(
 +            "(?:https?://|www\\.)?([a-z0-9.-]+\\.(?:ru|com|net|org|io|me|app|xyz|cc|biz|info))");
@@ -614,6 +624,193 @@ index 00000000..adfd1c22
 +        rules = store.loadRules();
 +        config = store.getConfig();
 +        cache.clear();
++        dupCache.clear();
++        seen.clear();
++        hiddenDups.clear();
++        // Prune by age once per init/reload (off the hot render path), BEFORE loading.
++        long now = System.currentTimeMillis() / 1000L;
++        try {
++            store.pruneSeenByAge(now - (long) config.dupSeenMaxAgeDays * 86400L);
++            store.pruneHiddenDups(now - (long) config.dupHiddenMaxAgeDays * 86400L);
++        } catch (Throwable ignore) {
++        }
++        java.util.List<Core.SeenPost> loaded = store.loadSeenPosts(SEEN_CAP);
++        // loaded is newest-first; insert oldest-first so LRU eviction drops the oldest.
++        for (int i = loaded.size() - 1; i >= 0; i--) {
++            seen.put(loaded.get(i).key, loaded.get(i));
++        }
++        hiddenDups.addAll(store.loadHiddenDupKeys());
++    }
++
++    // Cross-channel duplicate news: hide a channel post if an EARLIER-dated, very
++    // similar post from a DIFFERENT channel was already seen (the first stays, later
++    // copies hide). Similarity = SimHash near-dup OR high keyword overlap. Tunable
++    // via the dup_* meta keys. Only broadcast-channel posts participate (never
++    // private chats), so identical texts sent to two people are never hidden.
++    public synchronized boolean isDuplicateGroup(MessageObject.GroupedMessages group) {
++        if (group == null || group.messages == null) return false;
++        MessageObject cap = group.findCaptionMessageObject();
++        if (cap != null) return isDuplicate(cap);
++        for (int i = 0; i < group.messages.size(); i++) {
++            if (isDuplicate(group.messages.get(i))) return true;
++        }
++        return false;
++    }
++
++    public synchronized boolean isDuplicate(MessageObject mo) {
++        if (mo == null || config == null || !config.dedupEnabled) return false;
++        if (mo.messageOwner == null || !mo.messageOwner.post) return false; // channel posts only
++        String text = effectiveText(mo);
++        if (text == null || text.trim().isEmpty()) return false;
++        if (Normalize.tokenSet(text).size() < config.dupMinTokens) return false;
++        long did = mo.getDialogId();
++        String key = did + ":" + mo.getId();
++        Boolean cached = dupCache.get(key);
++        if (cached != null) return cached;
++        if (hiddenDups.contains(key)) { // persistent decision: stays hidden after journal pruning
++            dupCache.put(key, true);
++            return true;
++        }
++        long sh = Normalize.simhashOf(text);
++        Set<String> kw = Normalize.keywords(text);
++        int date = mo.messageOwner.date;
++        boolean dup = false;
++        for (Core.SeenPost s : seen.values()) {
++            if (s.dialogId == did) continue;     // only across different channels
++            if (s.date >= date) continue;        // the earliest-dated copy is the original
++            if (Core.hamming(s.simhash, sh) <= config.dupThreshold
++                    || jaccard(s.keywords, kw) >= config.dupKwRatio) {
++                dup = true;
++                break;
++            }
++        }
++        if (!seen.containsKey(key)) {
++            Core.SeenPost p = new Core.SeenPost();
++            p.key = key;
++            p.dialogId = did;
++            p.simhash = sh;
++            p.keywords = kw;
++            p.date = date;
++            seen.put(key, p);
++            try {
++                store.addSeenPost(key, did, sh, kw, date);
++            } catch (Throwable ignore) {
++            }
++            if (seen.size() > SEEN_CAP) {
++                java.util.Iterator<String> it = seen.keySet().iterator();
++                if (it.hasNext()) {
++                    it.next();
++                    it.remove();
++                }
++            }
++        }
++        if (dup && !hiddenDups.contains(key)) { // persist so it stays hidden later
++            hiddenDups.add(key);
++            try {
++                store.addHiddenDup(key, System.currentTimeMillis() / 1000L);
++            } catch (Throwable ignore) {
++            }
++        }
++        dupCache.put(key, dup);
++        return dup;
++    }
++
++    // Journal newly-arrived channel posts (called from MessagesController on the main
++    // thread). Filters on-thread, then does SimHash + dup-decision + SQLite off-thread.
++    // Deciding here (not just at render) lets notifications and the chat-list unread
++    // badge be suppressed for a duplicate the moment it arrives.
++    public void journalArrivals(java.util.ArrayList<MessageObject> messages) {
++        if (messages == null || messages.isEmpty()) return;
++        final int minTokens = config == null ? 8 : config.dupMinTokens;
++        final java.util.ArrayList<Object[]> batch = new java.util.ArrayList<>();
++        for (int i = 0; i < messages.size(); i++) {
++            MessageObject mo = messages.get(i);
++            if (mo == null || mo.messageOwner == null || !mo.messageOwner.post) continue; // channel posts only
++            if (mo.isOut()) continue;                       // never our own
++            if (!mo.isSent() || mo.isSending()) continue;   // skip local echoes (negative ids)
++            String text = effectiveText(mo);
++            if (text == null || text.trim().isEmpty()) continue;
++            if (Normalize.tokenSet(text).size() < minTokens) continue;
++            batch.add(new Object[]{mo.getDialogId() + ":" + mo.getId(), mo.getDialogId(), text, mo.messageOwner.date});
++        }
++        if (batch.isEmpty()) return;
++        journalExec.execute(() -> {
++            for (Object[] row : batch) {
++                try {
++                    journalOne((String) row[0], (Long) row[1], (String) row[2], (Integer) row[3]);
++                } catch (Throwable ignore) {
++                }
++            }
++        });
++    }
++
++    private synchronized void journalOne(String key, long did, String text, int date) {
++        if (config == null) return;
++        long sh = Normalize.simhashOf(text);
++        Set<String> kw = Normalize.keywords(text);
++        boolean dup = hiddenDups.contains(key);
++        if (!dup) {
++            for (Core.SeenPost s : seen.values()) {
++                if (s.dialogId == did) continue;
++                if (s.date >= date) continue;
++                if (Core.hamming(s.simhash, sh) <= config.dupThreshold
++                        || jaccard(s.keywords, kw) >= config.dupKwRatio) {
++                    dup = true;
++                    break;
++                }
++            }
++        }
++        if (dup && !hiddenDups.contains(key)) {
++            hiddenDups.add(key);
++            try {
++                store.addHiddenDup(key, System.currentTimeMillis() / 1000L);
++            } catch (Throwable ignore) {
++            }
++        }
++        if (!seen.containsKey(key)) {
++            Core.SeenPost p = new Core.SeenPost();
++            p.key = key;
++            p.dialogId = did;
++            p.simhash = sh;
++            p.keywords = kw;
++            p.date = date;
++            seen.put(key, p);
++            try {
++                store.addSeenPost(key, did, sh, kw, date, System.currentTimeMillis() / 1000L);
++            } catch (Throwable ignore) {
++            }
++            if (seen.size() > SEEN_CAP) {
++                java.util.Iterator<String> it = seen.keySet().iterator();
++                if (it.hasNext()) {
++                    it.next();
++                    it.remove();
++                }
++            }
++        }
++        dupCache.put(key, dup);
++    }
++
++    // Side-effect-free check for the chat-list / notifications: is this post a known
++    // hidden duplicate? (Reflects decisions already made at arrival or render.)
++    public synchronized boolean isKnownDuplicate(MessageObject mo) {
++        if (mo == null || config == null || !config.dedupEnabled) return false;
++        if (mo.messageOwner == null || !mo.messageOwner.post) return false;
++        String key = mo.getDialogId() + ":" + mo.getId();
++        if (hiddenDups.contains(key)) return true;
++        Boolean c = dupCache.get(key);
++        return c != null && c;
++    }
++
++    private static double jaccard(Set<String> a, Set<String> b) {
++        if (a.isEmpty() || b.isEmpty()) return 0;
++        Set<String> small = a.size() <= b.size() ? a : b;
++        Set<String> big = a.size() <= b.size() ? b : a;
++        int inter = 0;
++        for (String x : small) {
++            if (big.contains(x)) inter++;
++        }
++        int union = a.size() + b.size() - inter;
++        return union == 0 ? 0 : (double) inter / (double) union;
 +    }
 +
 +    private static String textOf(MessageObject mo) {
@@ -724,10 +921,10 @@ index 00000000..adfd1c22
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdStore.java b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
 new file mode 100644
-index 00000000..af232cbd
+index 00000000..42d5186d
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,273 @@
 +package com.tgadblock;
 +
 +import android.content.ContentValues;
@@ -749,7 +946,7 @@ index 00000000..af232cbd
 + */
 +public final class AdStore extends SQLiteOpenHelper {
 +    private static final String DB_NAME = "adblock_rules.db";
-+    private static final int DB_VERSION = 1;
++    private static final int DB_VERSION = 3;
 +
 +    public AdStore(Context ctx) {
 +        super(ctx.getApplicationContext(), DB_NAME, null, DB_VERSION);
@@ -775,11 +972,43 @@ index 00000000..af232cbd
 +        setDefaultMeta(db, "kw_ratio", "0.35");
 +        setDefaultMeta(db, "kw_min", "3");
 +        setDefaultMeta(db, "kw_strong_ratio", "0.7");
++        ensureDedupSchema(db);
 +    }
 +
 +    @Override
 +    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-+        // Schema v1 only so far; nothing to migrate.
++        if (oldVersion < 2) {
++            ensureDedupSchema(db); // v2: cross-channel duplicate-news auto-hide
++        }
++        if (oldVersion < 3) {
++            ensureHiddenDupsSchema(db); // v3: persistent hide-decisions
++        }
++    }
++
++    // Idempotent: the "seen posts" journal + dedup tuning defaults.
++    private static void ensureDedupSchema(SQLiteDatabase db) {
++        db.execSQL("CREATE TABLE IF NOT EXISTS seen_posts ("
++                + "key TEXT PRIMARY KEY,"
++                + "dialog_id TEXT NOT NULL DEFAULT '',"
++                + "simhash TEXT NOT NULL,"
++                + "keywords TEXT NOT NULL DEFAULT '',"
++                + "msg_date INTEGER NOT NULL DEFAULT 0,"
++                + "created_at INTEGER NOT NULL DEFAULT 0)");
++        setDefaultMeta(db, "dedup_enabled", "1");
++        setDefaultMeta(db, "dup_threshold", "8");
++        setDefaultMeta(db, "dup_kw_ratio", "0.6");
++        setDefaultMeta(db, "dup_min_tokens", "8");
++        setDefaultMeta(db, "dup_seen_max_age_days", "14");
++        setDefaultMeta(db, "dup_hidden_max_age_days", "180");
++        ensureHiddenDupsSchema(db);
++    }
++
++    // Persistent hide-decisions: a hidden duplicate stays hidden even after the
++    // journal rows that triggered it are age-pruned.
++    private static void ensureHiddenDupsSchema(SQLiteDatabase db) {
++        db.execSQL("CREATE TABLE IF NOT EXISTS hidden_dups ("
++                + "key TEXT PRIMARY KEY,"
++                + "created_at INTEGER NOT NULL DEFAULT 0)");
 +    }
 +
 +    private static void setDefaultMeta(SQLiteDatabase db, String key, String value) {
@@ -839,11 +1068,105 @@ index 00000000..af232cbd
 +                    case "kw_ratio": cfg.kwRatio = Double.parseDouble(v); break;
 +                    case "kw_min": cfg.kwMin = Integer.parseInt(v); break;
 +                    case "kw_strong_ratio": cfg.kwStrongRatio = Double.parseDouble(v); break;
++                    case "dedup_enabled": cfg.dedupEnabled = !"0".equals(v); break;
++                    case "dup_threshold": cfg.dupThreshold = Integer.parseInt(v); break;
++                    case "dup_kw_ratio": cfg.dupKwRatio = Double.parseDouble(v); break;
++                    case "dup_min_tokens": cfg.dupMinTokens = Integer.parseInt(v); break;
++                    case "dup_seen_max_age_days": cfg.dupSeenMaxAgeDays = Integer.parseInt(v); break;
++                    case "dup_hidden_max_age_days": cfg.dupHiddenMaxAgeDays = Integer.parseInt(v); break;
 +                    default: break;
 +                }
 +            }
 +        }
 +        return cfg;
++    }
++
++    // --- cross-channel duplicate-news journal ---
++
++    public void addSeenPost(String key, long dialogId, long simhash, Set<String> keywords, int date) {
++        SQLiteDatabase db = getWritableDatabase();
++        ContentValues cv = new ContentValues();
++        cv.put("key", key);
++        cv.put("dialog_id", Long.toString(dialogId));
++        cv.put("simhash", Long.toUnsignedString(simhash));
++        cv.put("keywords", join(keywords));
++        cv.put("msg_date", date);
++        cv.put("created_at", date);
++        db.insertWithOnConflict("seen_posts", null, cv, SQLiteDatabase.CONFLICT_IGNORE);
++    }
++
++    // Arrival-journaling variant: created_at is the real arrival time (for age-pruning),
++    // while msg_date stays the message's own date (used by the "earliest is original" rule).
++    public void addSeenPost(String key, long dialogId, long simhash, Set<String> keywords,
++                            int msgDate, long arrivalSec) {
++        SQLiteDatabase db = getWritableDatabase();
++        ContentValues cv = new ContentValues();
++        cv.put("key", key);
++        cv.put("dialog_id", Long.toString(dialogId));
++        cv.put("simhash", Long.toUnsignedString(simhash));
++        cv.put("keywords", join(keywords));
++        cv.put("msg_date", msgDate);
++        cv.put("created_at", arrivalSec);
++        db.insertWithOnConflict("seen_posts", null, cv, SQLiteDatabase.CONFLICT_IGNORE);
++    }
++
++    public void addHiddenDup(String key, long nowSec) {
++        SQLiteDatabase db = getWritableDatabase();
++        ContentValues cv = new ContentValues();
++        cv.put("key", key);
++        cv.put("created_at", nowSec);
++        db.insertWithOnConflict("hidden_dups", null, cv, SQLiteDatabase.CONFLICT_IGNORE);
++    }
++
++    public Set<String> loadHiddenDupKeys() {
++        Set<String> out = new HashSet<>();
++        SQLiteDatabase db = getReadableDatabase();
++        try (Cursor c = db.rawQuery("SELECT key FROM hidden_dups", null)) {
++            while (c.moveToNext()) {
++                out.add(c.getString(0));
++            }
++        }
++        return out;
++    }
++
++    public void pruneSeenByAge(long cutoffSec) {
++        getWritableDatabase().execSQL("DELETE FROM seen_posts WHERE created_at < ?",
++                new Object[]{cutoffSec});
++    }
++
++    public void pruneHiddenDups(long cutoffSec) {
++        getWritableDatabase().execSQL("DELETE FROM hidden_dups WHERE created_at < ?",
++                new Object[]{cutoffSec});
++    }
++
++    public List<Core.SeenPost> loadSeenPosts(int limit) {
++        List<Core.SeenPost> out = new ArrayList<>();
++        SQLiteDatabase db = getReadableDatabase();
++        try (Cursor c = db.rawQuery(
++                "SELECT key, dialog_id, simhash, keywords, msg_date FROM seen_posts "
++                + "ORDER BY msg_date DESC LIMIT ?", new String[]{Integer.toString(limit)})) {
++            while (c.moveToNext()) {
++                Core.SeenPost p = new Core.SeenPost();
++                p.key = c.getString(0);
++                try {
++                    p.dialogId = Long.parseLong(c.isNull(1) ? "0" : c.getString(1));
++                } catch (Exception e) {
++                    p.dialogId = 0;
++                }
++                p.simhash = Long.parseUnsignedLong(c.getString(2));
++                p.keywords = split(c.isNull(3) ? "" : c.getString(3));
++                p.date = c.getInt(4);
++                out.add(p);
++            }
++        }
++        return out;
++    }
++
++    public void pruneSeen(int maxRows) {
++        getWritableDatabase().execSQL(
++                "DELETE FROM seen_posts WHERE key NOT IN "
++                + "(SELECT key FROM seen_posts ORDER BY msg_date DESC LIMIT ?)",
++                new Object[]{maxRows});
 +    }
 +
 +    public boolean isSeeded() {
@@ -877,10 +1200,10 @@ index 00000000..af232cbd
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Core.java b/TMessagesProj/src/main/java/com/tgadblock/Core.java
 new file mode 100644
-index 00000000..12996c46
+index 00000000..56c2c750
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Core.java
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,152 @@
 +package com.tgadblock;
 +
 +import java.util.List;
@@ -941,6 +1264,13 @@ index 00000000..12996c46
 +        public double kwRatio = 0.35;
 +        public int kwMin = 3;
 +        public double kwStrongRatio = 0.7;
++        // cross-channel duplicate-news auto-hide
++        public boolean dedupEnabled = true;
++        public int dupThreshold = 8;       // SimHash Hamming distance (lower = more similar required)
++        public double dupKwRatio = 0.6;    // OR: keyword Jaccard overlap
++        public int dupMinTokens = 8;       // skip messages shorter than this (avoid hiding short posts)
++        public int dupSeenMaxAgeDays = 14; // prune the seen-journal older than this
++        public int dupHiddenMaxAgeDays = 180; // prune persisted hide-decisions older than this
 +    }
 +
 +    public static final class Rule {
@@ -959,6 +1289,15 @@ index 00000000..12996c46
 +        public long simhash = 0L;
 +        public Set<String> tokens = java.util.Collections.emptySet();
 +        public Set<String> domains = java.util.Collections.emptySet();
++    }
++
++    // A previously-seen post, for cross-channel duplicate detection.
++    public static final class SeenPost {
++        public String key = "";
++        public long dialogId = 0L;
++        public long simhash = 0L;
++        public Set<String> keywords = java.util.Collections.emptySet();
++        public int date = 0;
 +    }
 +
 +    public static final class Match {
@@ -1291,7 +1630,7 @@ index 00000000..91c8eeb7
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..12ae0c81
+index 00000000..c7eab914
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -1308,14 +1647,14 @@ index 00000000..12ae0c81
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 2;
-+    public static final String ADBLOCK_VERSION_NAME = "2.0";
++    public static final int ADBLOCK_VERSION = 4;
++    public static final String ADBLOCK_VERSION_NAME = "4.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
 +}
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
-index 29f10b39..30d62151 100644
+index fc43c648..569248cd 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
 @@ -289,6 +289,12 @@ public class ApplicationLoader extends Application {
@@ -1331,35 +1670,218 @@ index 29f10b39..30d62151 100644
          if (BuildVars.LOGS_ENABLED) {
              FileLog.d("app start time = " + (startTime = SystemClock.elapsedRealtime()));
              try {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+index 622adb0f..91715368 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
+@@ -10237,7 +10237,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         checkReadTasks();
+ 
+         if (getUserConfig().isClientActivated()) {
+-            if (!ignoreSetOnline && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {
++            if (!ignoreSetOnline && !SharedConfig.ghostMode && getConnectionsManager().getPauseTime() == 0 && ApplicationLoader.isScreenOn && !ApplicationLoader.mainInterfacePausedStageQueue) {
+                 if (ApplicationLoader.mainInterfacePausedStageQueueTime != 0 && Math.abs(ApplicationLoader.mainInterfacePausedStageQueueTime - System.currentTimeMillis()) > 1000) {
+                     if (statusSettingState != 1 && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
+                         statusSettingState = 1;
+@@ -10306,7 +10306,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         int currentServerTime = getConnectionsManager().getCurrentTime();
+         if (Math.abs(System.currentTimeMillis() - lastViewsCheckTime) >= 5000) {
+             lastViewsCheckTime = System.currentTimeMillis();
+-            if (channelViewsToSend.size() != 0) {
++            if (!SharedConfig.ghostMode && channelViewsToSend.size() != 0) {
+                 for (int a = 0; a < channelViewsToSend.size(); a++) {
+                     long key = channelViewsToSend.keyAt(a);
+                     TLRPC.TL_messages_getMessagesViews req = new TLRPC.TL_messages_getMessagesViews();
+@@ -11103,6 +11103,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         if (dialogId == selfId) {
+             return false;
+         }
++        if (SharedConfig.ghostMode) return false; // ad-blocker ghost mode: never send typing/recording actions
+         if (dialogId < 0) {
+             if (ChatObject.getSendAsPeerId(getChat(-dialogId), getChatFull(-dialogId)) != selfId) {
+                 return false;
+@@ -14006,6 +14007,7 @@ public class MessagesController extends BaseController implements NotificationCe
+ 
+     public void addToViewsQueue(MessageObject messageObject) {
+         if (messageObject == null) return;
++        if (SharedConfig.ghostMode) return; // ad-blocker ghost mode: don't increment post view counters
+         Utilities.stageQueue.postRunnable(() -> {
+             long peer = messageObject.getDialogId();
+             int id = messageObject.getId();
+@@ -14074,6 +14076,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         long dialogId = messageObject.getDialogId();
+         getMessagesStorage().markMessagesContentAsRead(dialogId, arrayList, 0, 0);
+         getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, dialogId, arrayList);
++        if (SharedConfig.ghostMode) return; // ad-blocker ghost mode: don't send "played"/content-read receipt
+         if (messageObject.getId() < 0) {
+             markMessageAsRead(messageObject.getDialogId(), messageObject.messageOwner.random_id, Integer.MIN_VALUE);
+         } else {
+@@ -14226,6 +14229,7 @@ public class MessagesController extends BaseController implements NotificationCe
+     }
+ 
+     private void completeReadTask(ReadTask task) {
++        if (SharedConfig.ghostMode) return; // ad-blocker ghost mode: never send read receipts
+         if (task.replyId != 0 && task.monoForumPeerId == 0) {
+             TLRPC.TL_messages_readDiscussion req = new TLRPC.TL_messages_readDiscussion();
+             req.msg_id = (int) task.replyId;
+@@ -14332,6 +14336,7 @@ public class MessagesController extends BaseController implements NotificationCe
+             return;
+         }
+         getMessagesStorage().resetMentionsCount(dialogId, topicId, 0);
++        if (SharedConfig.ghostMode) return; // ad-blocker ghost mode: don't send mention-read receipt
+         TLRPC.TL_messages_readMentions req = new TLRPC.TL_messages_readMentions();
+         req.peer = getInputPeer(dialogId);
+         if (topicId != 0) {
+@@ -20829,6 +20834,7 @@ public class MessagesController extends BaseController implements NotificationCe
+             topicsController.markAllReactionsAsRead(-dialogId, topicId);
+         }
+         getMessagesStorage().updateUnreadReactionsCount(dialogId, topicId, 0);
++        if (!SharedConfig.ghostMode) { // ad-blocker ghost mode: don't send reactions-read receipt
+         TLRPC.TL_messages_readReactions req = new TLRPC.TL_messages_readReactions();
+         req.peer = getInputPeer(dialogId);
+ 
+@@ -20844,6 +20850,7 @@ public class MessagesController extends BaseController implements NotificationCe
+         getConnectionsManager().sendRequest(req, (response, error) -> {
+ 
+         });
++        }
+         NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.updateInterfaces, UPDATE_MASK_REACTIONS_READ);
+     }
+ 
+@@ -21170,6 +21177,11 @@ public class MessagesController extends BaseController implements NotificationCe
+         if (mode == ChatActivity.MODE_QUICK_REPLIES) {
+             QuickRepliesController.getInstance(currentAccount).checkLocalMessages(messages);
+         }
++        // ad-blocker: journal arriving channel posts so cross-channel duplicates are
++        // detected even in channels you never opened.
++        if (mode == ChatActivity.MODE_DEFAULT && com.tgadblock.AdFilter.getInstance() != null) {
++            try { com.tgadblock.AdFilter.getInstance().journalArrivals(messages); } catch (Throwable ignore) {}
++        }
+         getNotificationCenter().postNotificationName(NotificationCenter.didReceiveNewMessages, dialogId, messages, scheduled, mode);
+ 
+         if (lastMessage == null || scheduled) {
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+index 401dadb7..d840b9ef 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
+@@ -1044,6 +1044,20 @@ public class NotificationsController extends BaseController implements Notificat
+             }
+         }
+ 
++        // ad-blocker: never notify about a cross-channel duplicate news post.
++        if (com.tgadblock.AdFilter.getInstance() != null) {
++            for (int i = 0; i < messageObjects.size(); ++i) {
++                MessageObject mo = messageObjects.get(i);
++                try {
++                    if (mo != null && com.tgadblock.AdFilter.getInstance().isDuplicate(mo)) {
++                        messageObjects.remove(i);
++                        i--;
++                    }
++                } catch (Throwable ignore) {
++                }
++            }
++        }
++
+         if (messageObjects.isEmpty()) {
+             if (countDownLatch != null) {
+                 countDownLatch.countDown();
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java b/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
+index 63a75772..8eb73bf8 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
+@@ -216,6 +216,7 @@ public class SharedConfig {
+     public static byte[] pushAuthKey;
+     public static byte[] pushAuthKeyId;
+     public static boolean forceForumTabs;
++    public static boolean ghostMode; // ad-blocker: stealth mode — suppress read/online/typing/view leaks
+     public static boolean fastWallpaperDisabled;
+     public static boolean frameMetricsEnabled;
+ 
+@@ -609,6 +610,7 @@ public class SharedConfig {
+             useSystemEmoji = preferences.getBoolean("useSystemEmoji", false);
+             useSystemBoldFont = preferences.getBoolean("useSystemBoldFont", false);
+             forceForumTabs = preferences.getBoolean("forceForumTabs", false);
++            ghostMode = preferences.getBoolean("ghostMode", false);
+             fastWallpaperDisabled = preferences.getBoolean("fastWallpaperDisabled", false);
+             frameMetricsEnabled = preferences.getBoolean("frameMetricsEnabled", false);
+             if (useSystemBoldFont) {
+@@ -1126,6 +1128,14 @@ public class SharedConfig {
+         editor.apply();
+     }
+ 
++    public static void toggleGhostMode() {
++        ghostMode = !ghostMode;
++        SharedPreferences preferences = MessagesController.getGlobalMainSettings();
++        SharedPreferences.Editor editor = preferences.edit();
++        editor.putBoolean("ghostMode", ghostMode);
++        editor.apply();
++    }
++
+     public static void toggleFastWallpaperDisabled() {
+         fastWallpaperDisabled = !fastWallpaperDisabled;
+         SharedPreferences preferences = MessagesController.getGlobalMainSettings();
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
-index 2df7bd8a..977f1fbd 100644
+index 6a24ff08..5e35f35c 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
-@@ -13492,6 +13492,19 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -13605,6 +13605,22 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
  
      @Override
      protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
 +        // ad-blocker: collapse messages flagged as ads to a 1px-tall, non-painting cell.
 +        // For an album, test the whole group so every photo collapses together (no
 +        // orphaned siblings / overlap). Collapsing also drops keyboardHeight, so inline
-+        // ad buttons under the message disappear with it.
-+        if (currentMessageObject != null && com.tgadblock.AdFilter.getInstance() != null) {
-+            boolean adHidden = currentMessagesGroup != null
-+                    ? com.tgadblock.AdFilter.getInstance().isAdGroup(currentMessagesGroup)
-+                    : com.tgadblock.AdFilter.getInstance().isAd(currentMessageObject);
-+            if (adHidden) {
-+                setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), 1);
-+                return;
-+            }
++        // ad buttons under the message disappear with it. tgadHidden additionally
++        // suppresses all drawing (see onDraw/drawContent) — otherwise the photo/text
++        // keep painting at their old coordinates and spill over the next message.
++        tgadHidden = currentMessageObject != null && com.tgadblock.AdFilter.getInstance() != null
++                && (currentMessagesGroup != null
++                    ? (com.tgadblock.AdFilter.getInstance().isAdGroup(currentMessagesGroup)
++                        || com.tgadblock.AdFilter.getInstance().isDuplicateGroup(currentMessagesGroup))
++                    : (com.tgadblock.AdFilter.getInstance().isAd(currentMessageObject)
++                        || com.tgadblock.AdFilter.getInstance().isDuplicate(currentMessageObject)));
++        if (tgadHidden) {
++            setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), 1);
++            return;
 +        }
          if (currentMessageObject != null && (currentMessageObject.checkLayout() || lastHeight != AndroidUtilities.displaySize.y)) {
              inLayout = true;
              MessageObject messageObject = currentMessageObject;
+@@ -13629,6 +13645,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         );
+     }
+ 
++    // ad-blocker: true when the current message is a hidden ad; gates all drawing.
++    private boolean tgadHidden;
++
+     private int additionalPaddingHeight;
+ 
+     public int getAdditionalPaddingHeight() {
+@@ -14211,6 +14230,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+     }
+ 
+     public void drawContent(Canvas canvas, boolean preview) {
++        if (tgadHidden) {
++            return; // ad-blocker: collapsed ad cell paints nothing
++        }
+         if (preview != (currentMessageObject != null && currentMessageObject.preview)) {
+             return;
+         }
+@@ -19955,6 +19977,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+         drawInternal(canvas);
+     }
+     public void drawInternal(Canvas canvas) {
++        if (tgadHidden) {
++            return; // ad-blocker: collapsed ad cell paints nothing
++        }
+         if (currentMessageObject == null) {
+             return;
+         }
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
-index afe20a37..0fdf69cf 100644
+index fa76337a..f93aaf4a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
-@@ -2610,6 +2610,21 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+@@ -2610,6 +2610,37 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
              FileLog.e(e);
          }
  
@@ -1376,16 +1898,32 @@ index afe20a37..0fdf69cf 100644
 +            }
 +            messageString = ru ? "Скрытая реклама" : "Hidden ad";
 +            thumbsCount = 0;
++        } else if (message != null && !message.isOutOwner()
++                && com.tgadblock.AdFilter.getInstance() != null
++                && com.tgadblock.AdFilter.getInstance().isKnownDuplicate(message)) {
++            // ad-blocker: a cross-channel duplicate — mute the chat-list signal so it
++            // doesn't lure you to open the channel. Purely visual: the real unread
++            // count is untouched and the badge returns when a non-duplicate arrives.
++            boolean ru = false;
++            try {
++                LocaleController.LocaleInfo li = LocaleController.getInstance().getCurrentLocaleInfo();
++                ru = li != null && li.shortName != null && li.shortName.toLowerCase().startsWith("ru");
++            } catch (Throwable ignore) {
++            }
++            messageString = ru ? "Дубликат новости" : "Duplicate";
++            thumbsCount = 0;
++            drawCount = false;
++            unreadCount = 0;
 +        }
 +
          try {
              CharSequence messageStringFinal;
              // Removing links and bold spans to get rid of underlining and boldness
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index 78bcdbe9..8e7e5aa2 100644
+index c4bb90c5..ff371f18 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-@@ -1154,6 +1154,22 @@ public class ChatActivity extends BaseFragment implements
+@@ -1213,6 +1213,22 @@ public class ChatActivity extends BaseFragment implements
      public final static int OPTION_ADD_STICKER_TO_FAVORITES = 20;
      public final static int OPTION_DELETE_STICKER_FROM_FAVORITES = 21;
      public final static int OPTION_COPY_LINK = 22;
@@ -1408,7 +1946,7 @@ index 78bcdbe9..8e7e5aa2 100644
      public final static int OPTION_REPORT_CHAT = 23;
      public final static int OPTION_CANCEL_SENDING = 24;
      public final static int OPTION_UNVOTE = 25;
-@@ -32626,6 +32642,26 @@ public class ChatActivity extends BaseFragment implements
+@@ -33033,6 +33049,26 @@ public class ChatActivity extends BaseFragment implements
                  presentFragment(fragment);
                  break;
              }
@@ -1435,7 +1973,7 @@ index 78bcdbe9..8e7e5aa2 100644
              case OPTION_COPY: {
                  if (selectedObject.isDice()) {
                      AndroidUtilities.addToClipboard(selectedObject.getDiceEmoji());
-@@ -44709,6 +44745,16 @@ public class ChatActivity extends BaseFragment implements
+@@ -45240,6 +45276,16 @@ public class ChatActivity extends BaseFragment implements
              deleteIconRes = R.drawable.msg_delete;
          }
  
@@ -1450,8 +1988,109 @@ index 78bcdbe9..8e7e5aa2 100644
 +        }
 +
          if (type == -1) {
-             if ((selectedObject.type == MessageObject.TYPE_TEXT || selectedObject.isAnimatedEmoji() || selectedObject.isAnimatedEmojiStickers() || getMessageCaption(selectedObject, selectedObjectGroup) != null) && !noforwardsOrPaidMedia && !message.isExpiredStory()) {
+             if ((selectedObject.type == MessageObject.TYPE_TEXT || selectedObject.type == MessageObject.TYPE_ARTICLE || selectedObject.isAnimatedEmoji() || selectedObject.isAnimatedEmojiStickers() || getMessageCaption(selectedObject, selectedObjectGroup) != null) && !noforwardsOrPaidMedia && !message.isExpiredStory()) {
                  items.add(LocaleController.getString(R.string.Copy));
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PrivacySettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/PrivacySettingsActivity.java
+index 6ce417f1..7807fcd6 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/PrivacySettingsActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/PrivacySettingsActivity.java
+@@ -132,6 +132,7 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
+     private int newChatsHeaderRow;
+     @Keep
+     private int newChatsRow;
++    private int ghostModeRow; // ad-blocker: Ghost mode toggle
+     private int newChatsSectionRow;
+     private int advancedSectionRow;
+     @Keep
+@@ -562,6 +563,10 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
+                 final TextCheckCell cell = (TextCheckCell) view;
+                 archiveChats = !archiveChats;
+                 cell.setChecked(archiveChats);
++            } else if (position == ghostModeRow) {
++                final TextCheckCell cell = (TextCheckCell) view;
++                SharedConfig.toggleGhostMode();
++                cell.setChecked(SharedConfig.ghostMode);
+             } else if (position == contactsSyncRow) {
+                 newSync = !newSync;
+                 if (view instanceof TextCheckCell) {
+@@ -762,6 +767,7 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
+             newChatsRow = -1;
+             newChatsSectionRow = -1;
+         }
++        ghostModeRow = rowCount++;
+         advancedSectionRow = rowCount++;
+         deleteAccountRow = rowCount++;
+         deleteAccountDetailRow = rowCount++;
+@@ -1035,6 +1041,7 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
+                     position == noncontactsRow ||
+                     position == deleteAccountRow && !getContactsController().getLoadingDeleteInfo() ||
+                     position == newChatsRow && !getContactsController().getLoadingGlobalSettings() ||
++                    position == ghostModeRow ||
+                     position == emailLoginRow || position == paymentsClearRow || position == secretMapRow ||
+                     position == contactsSyncRow || position == passportRow || position == contactsDeleteRow ||
+                     position == contactsSuggestRow || position == autoDeleteMesages || position == botsBiometryRow;
+@@ -1284,6 +1291,13 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
+                         textCheckCell.setTextAndCheck(getString("SuggestContacts", R.string.SuggestContacts), newSuggest, false);
+                     } else if (position == newChatsRow) {
+                         textCheckCell.setTextAndCheck(getString("ArchiveAndMute", R.string.ArchiveAndMute), archiveChats, false);
++                    } else if (position == ghostModeRow) {
++                        boolean ghRu = false;
++                        try {
++                            LocaleController.LocaleInfo li = LocaleController.getInstance().getCurrentLocaleInfo();
++                            ghRu = li != null && li.shortName != null && li.shortName.toLowerCase().startsWith("ru");
++                        } catch (Throwable ignore) {}
++                        textCheckCell.setTextAndCheck(ghRu ? "Режим призрака (скрыть прочтение/онлайн)" : "Ghost mode (hide read/online)", SharedConfig.ghostMode, true);
+                     }
+                     break;
+                 case 5:
+@@ -1397,7 +1411,7 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
+                 return 1;
+             } else if (position == securitySectionRow || position == advancedSectionRow || position == privacySectionRow || position == secretSectionRow || position == botsSectionRow || position == contactsSectionRow || position == newChatsHeaderRow) {
+                 return 2;
+-            } else if (position == secretWebpageRow || position == contactsSyncRow || position == contactsSuggestRow || position == newChatsRow) {
++            } else if (position == secretWebpageRow || position == contactsSyncRow || position == contactsSuggestRow || position == newChatsRow || position == ghostModeRow) {
+                 return 3;
+             } else if (position == botsAndWebsitesShadowRow) {
+                 return 4;
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java b/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java
+index 567fe0fa..fc8745fb 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/Stories/StoriesController.java
+@@ -20,6 +20,7 @@ import org.telegram.SQLite.SQLitePreparedStatement;
+ import org.telegram.messenger.AccountInstance;
+ import org.telegram.messenger.AndroidUtilities;
+ import org.telegram.messenger.ApplicationLoader;
++import org.telegram.messenger.SharedConfig;
+ import org.telegram.messenger.BuildVars;
+ import org.telegram.messenger.ChatObject;
+ import org.telegram.messenger.DialogObject;
+@@ -1297,11 +1298,13 @@ public class StoriesController {
+             if (!profile) {
+                 storiesStorage.updateMaxReadId(dialogId, newReadId);
+             }
+-            TL_stories.TL_stories_readStories req = new TL_stories.TL_stories_readStories();
+-            req.peer = MessagesController.getInstance(currentAccount).getInputPeer(dialogId);
+-            req.max_id = storyItem.id;
+-            ConnectionsManager.getInstance(currentAccount).sendRequest(req, null);
+-            NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.storiesReadUpdated);
++            if (!SharedConfig.ghostMode) { // ad-blocker ghost mode: don't send story-read receipt
++                TL_stories.TL_stories_readStories req = new TL_stories.TL_stories_readStories();
++                req.peer = MessagesController.getInstance(currentAccount).getInputPeer(dialogId);
++                req.max_id = storyItem.id;
++                ConnectionsManager.getInstance(currentAccount).sendRequest(req, null);
++                NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.storiesReadUpdated);
++            }
+             return true;
+         }
+         return false;
+@@ -3725,6 +3728,7 @@ public class StoriesController {
+             if (seenStories.contains(storyId)) return false;
+             seenStories.add(storyId);
+             saveCache();
++            if (SharedConfig.ghostMode) return true; // ad-blocker ghost mode: don't increment story views
+             TL_stories.TL_stories_incrementStoryViews req = new TL_stories.TL_stories_incrementStoryViews();
+             req.peer = MessagesController.getInstance(currentAccount).getInputPeer(dialogId);
+             req.id.add(storyId);
 diff --git a/TMessagesProj_App/build.gradle b/TMessagesProj_App/build.gradle
 index 2aa197cb..57a9e5df 100644
 --- a/TMessagesProj_App/build.gradle

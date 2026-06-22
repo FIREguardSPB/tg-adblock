@@ -1,37 +1,131 @@
-# tg-adblock — patched Telegram for Android (auto-build)
+# Telegram AAD — Telegram с блокировкой рекламы / ad-blocking Telegram
 
-Client-side ad-blocker for Telegram channels, built as a patch over the official
-[DrKLO/Telegram](https://github.com/DrKLO/Telegram) sources (no third-party fork).
+**Telegram AAD** (Anti-AD) — это официальный Telegram для Android с **минимальным патчем**,
+который скрывает рекламные и повторяющиеся посты в каналах.
 
-- Long-press a channel post → **"Заблокировать как рекламу"**. The post is hidden,
-  and similar posts (near-duplicate / reworded same campaign) are hidden too.
-- Detection = keyword overlap + sender/domain context + 64-bit SimHash, all local.
-  No ML, no server, rules stored in on-device SQLite.
-- A starter ruleset is bundled, so common ads are hidden on first launch.
+> 🔒 **Открыто и проверяемо.** Это **не сторонний форк**. Это официальный исходный код
+> [DrKLO/Telegram](https://github.com/DrKLO/Telegram) + **минимальные правки**, собранные «как есть».
+> Весь патч — в одном файле [`patches/android-adblock.patch`](patches/android-adblock.patch),
+> сборка идёт в публичном GitHub Actions (лог открыт). Никаких бинарных вставок — только открытый код.
+>
+> 🔒 **Open and auditable.** This is **not a third-party fork** — it is the official
+> [DrKLO/Telegram](https://github.com/DrKLO/Telegram) source plus a **minimal patch**, built as-is.
+> The entire patch is one file ([`patches/android-adblock.patch`](patches/android-adblock.patch)),
+> built in public GitHub Actions (open logs). No binary blobs — only readable source.
 
-## Automated builds
+📥 **Скачать / Download:** [**Releases**](../../releases/latest) → файл `tg-adblock-vN.apk`.
 
-`.github/workflows/build.yml` runs every 6 hours (and on manual dispatch):
+---
 
-1. resolves the upstream ref — the pinned base commit by default, or a ref you
-   pass on manual dispatch,
-2. applies [`patches/android-adblock.patch`](patches/android-adblock.patch),
-3. builds `:TMessagesProj_App:assembleAfatRelease` (Android SDK 35, NDK 27),
-4. publishes the signed APK to **Releases** (skips if that ref is already built).
+# 🇷🇺 По-русски
 
-> **Why not "latest release tag"?** DrKLO develops on `master` but their newest
-> GitHub *tag* is `release-11.4.2-5469` — far behind the 12.x the patch targets.
-> Auto-resolving the latest tag checked out an *older* tree than the patch's base,
-> so the patch failed to apply and scheduled runs errored out. The schedule now
-> rebuilds the pinned base (a no-op once released). To track a newer upstream,
-> dispatch with an explicit `ref` and re-anchor the patch if it no longer applies.
+**Надоела реклама в каналах?** Казино, крипто-сигналы, «займы за 5 минут», розыгрыши айфонов?
+**Достали одни и те же новости**, которые сыплются в десяток каналов одновременно?
+Telegram AAD прячет это всё — прямо на телефоне, без серверов и без слежки.
 
-If upstream changes the hooked files and the patch no longer applies, the run
-**fails on purpose** (it does not publish a broken build) — re-anchor the patch
-and re-run. The APK is signed with the repo's debug keystore: **sideload only**.
+## Что умеет
 
-## Manual run
+- 🚫 **Скрытие рекламы.** Зажми рекламный пост → **«Заблокировать как рекламу»**. Пост прячется,
+  и похожие (тот же текст / переформулированный, та же кампания) — тоже.
+- 📦 **Стартовый набор правил** уже встроен — типовая реклама (казино, крипта, займы, розыгрыши)
+  прячется сразу после установки.
+- 🧩 **Прячет везде:** и внутри канала, и в превью списка чатов. Корректно обрабатывает альбомы
+  (несколько фото), кнопки под постом и видео‑кружки.
+- 📰 **Авто-скрытие дубликатов новостей между каналами.** Если одна и та же (или очень похожая)
+  новость приходит в несколько каналов — показывается только **первая**, остальные прячутся
+  автоматически: **без поста в канале, без уведомления и без значка непрочитанного**. Работает по
+  приходу — даже если канал-источник ты не открывал.
+- 👻 **Режим призрака (Ghost mode).** Скрывает твою активность: отметки «прочитано», статус «онлайн»
+  / «был(а) недавно», «печатает…», просмотры постов и сторис. Включается/выключается переключателем.
+- 🔄 **Авто-проверка обновлений** раз в сутки — если вышла новая версия, придёт уведомление со ссылкой.
+- 🛡️ **Всё локально.** Никаких серверов и нейросетей: детект (ключевые слова + 64-битный SimHash)
+  работает на устройстве, правила лежат в локальной SQLite. Ничего никуда не уходит.
 
-Actions → *Build patched Telegram (ad-blocker)* → **Run workflow**. With the
-default ref it builds the exact base the patch is pinned to; pass an explicit
-ref (tag or commit) to build a newer upstream.
+## Установка
+
+1. Скачай свежий `tg-adblock-vN.apk` из [Releases](../../releases/latest).
+2. Поставь его (разреши установку из этого источника).
+3. Это **отдельное приложение** («Telegram AAD») — ставится **рядом** с обычным Telegram, ничего
+   не удаляя. Вход работает сразу, как в обычном Telegram.
+4. Дальше обновления будет предлагать само.
+
+## Как пользоваться
+
+- **Заблокировать рекламу:** зажми (долгое нажатие) рекламный пост → в меню выбери
+  **«Заблокировать как рекламу»**. Скроется и он, и похожие.
+- **Дубликаты новостей:** ничего делать не нужно — прячутся сами.
+- **Режим призрака:** **Настройки → Конфиденциальность → «Режим призрака»** (переключатель внизу).
+  Включил — твои прочтения/онлайн/«печатает» не видны; выключил — всё как обычно.
+
+> Примечание: канал с дубликатом может всё равно подняться вверх в списке по времени (Telegram
+> сортирует по времени сообщения) — но **значка «новое» и уведомления не будет**.
+
+---
+
+# 🇬🇧 In English
+
+**Tired of ads in your channels?** Casinos, crypto signals, "loans in 5 minutes", iPhone giveaways?
+**Sick of the same news** flooding a dozen channels at once? Telegram AAD hides all of it — on your
+device, with no servers and no tracking.
+
+## Features
+
+- 🚫 **Hide ads.** Long-press an ad post → **"Block as ad"**. That post is hidden, and similar ones
+  (same / reworded text, same campaign) are hidden too.
+- 📦 **Bundled starter ruleset** — common ads (casino, crypto, loans, giveaways) are hidden right
+  after install.
+- 🧩 **Hidden everywhere:** inside the channel *and* in the chat-list preview. Handles albums
+  (multi-photo), inline buttons, and round video notes correctly.
+- 📰 **Cross-channel duplicate-news auto-hide.** When the same (or very similar) news arrives in
+  several channels, only the **first** is shown; the rest are hidden automatically — **no post in the
+  channel, no notification, no unread badge**. It works on message arrival, even for channels you
+  never opened.
+- 👻 **Ghost mode.** Hides your activity: read receipts, online / last-seen, "typing…", post views and
+  story views. Toggle on/off.
+- 🔄 **Daily update check** — when a new version is published, you get a notification with the link.
+- 🛡️ **Fully local.** No servers, no ML: detection (keyword overlap + 64-bit SimHash) runs on-device,
+  rules live in local SQLite. Nothing ever leaves your phone.
+
+## Install
+
+1. Download the latest `tg-adblock-vN.apk` from [Releases](../../releases/latest).
+2. Install it (allow installs from this source).
+3. It's a **separate app** ("Telegram AAD") that installs **alongside** the regular Telegram without
+   removing it. Login works out of the box, like normal Telegram.
+4. Future versions will prompt you to update automatically.
+
+## How to use
+
+- **Block an ad:** long-press the ad post → choose **"Block as ad"**. It and similar posts disappear.
+- **Duplicate news:** nothing to do — hidden automatically.
+- **Ghost mode:** **Settings → Privacy and Security → "Ghost mode"** (toggle at the bottom). On =
+  your reads/online/typing are hidden; off = stock behavior.
+
+> Note: a channel with a duplicate may still rise in the chat list by time (Telegram sorts by message
+> time) — but there will be **no "new" badge and no notification**.
+
+---
+
+# 🛠️ Сборка / Building (для разработчиков / for developers)
+
+Минимальный патч поверх официального исходника, собирается в публичном CI. /
+A minimal patch over the official source, built in public CI.
+
+`.github/workflows/build.yml` (cron + ручной запуск / manual dispatch):
+
+1. забирает официальный исходник DrKLO/Telegram по закреплённому коммиту /
+   fetches the official DrKLO/Telegram source at the pinned commit,
+2. накладывает [`patches/android-adblock.patch`](patches/android-adblock.patch) (единственный файл правок / the only changes),
+3. подставляет приватный `api_id`/`api_hash` из секретов репозитория (`TG_API_ID` / `TG_API_HASH`) —
+   **в коде ключа нет** / injects the private `api_id`/`api_hash` from repo secrets — **the key is not in the code**,
+4. собирает `:TMessagesProj_App:assembleAfatRelease` (Android SDK 35, NDK 27) и публикует APK в **Releases** /
+   builds and publishes the APK to **Releases**.
+
+Релиз помечается версией патча (`tg-adblock-vN`), а не версией Telegram, поэтому встроенная авто-обновлялка
+видит новые сборки. / Releases are tagged by the patch version (`tg-adblock-vN`), so the in-app updater
+detects new builds.
+
+APK подписан debug-ключом репозитория — **только сайдлоад**. / The APK is signed with the repo's debug
+keystore — **sideload only**.
+
+**Запуск вручную / Manual run:** Actions → *Build patched Telegram (ad-blocker)* → **Run workflow**.
