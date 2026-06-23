@@ -514,10 +514,10 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..108b2383
+index 00000000..5115ec89
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,464 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -657,7 +657,9 @@ index 00000000..108b2383
 +            store.setMeta("sim_percent", String.valueOf(p));
 +        } catch (Throwable ignore) {
 +        }
-+        reload();
++        // Re-derive thresholds + reload the journal OFF the UI thread: the menu tap that
++        // calls this must not block on SQLite prune + the up-to-2500-row seen-post load.
++        journalExec.execute(this::reload);
 +    }
 +
 +    // Cross-channel duplicate news: hide a channel post if an EARLIER-dated, very
@@ -982,10 +984,10 @@ index 00000000..108b2383
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdStore.java b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
 new file mode 100644
-index 00000000..dfbd87b0
+index 00000000..cfa944c3
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
-@@ -0,0 +1,297 @@
+@@ -0,0 +1,299 @@
 +package com.tgadblock;
 +
 +import android.content.ContentValues;
@@ -1130,6 +1132,7 @@ index 00000000..dfbd87b0
 +        try (Cursor c = db.rawQuery("SELECT key, value FROM meta", null)) {
 +            while (c.moveToNext()) {
 +                String k = c.getString(0), v = c.getString(1);
++                try {
 +                switch (k) {
 +                    case "simhash_threshold": cfg.simhashThreshold = Integer.parseInt(v); break;
 +                    case "kw_ratio": cfg.kwRatio = Double.parseDouble(v); break;
@@ -1142,9 +1145,10 @@ index 00000000..dfbd87b0
 +                    case "dup_seen_max_age_days": cfg.dupSeenMaxAgeDays = Integer.parseInt(v); break;
 +                    case "dup_hidden_max_age_days": cfg.dupHiddenMaxAgeDays = Integer.parseInt(v); break;
 +                    case "mark_hidden_read": cfg.markHiddenRead = !"0".equals(v); break;
-+                    case "sim_percent": try { cfg.simPercent = Integer.parseInt(v); } catch (Exception e) {} break;
++                    case "sim_percent": cfg.simPercent = Integer.parseInt(v); break;
 +                    default: break;
 +                }
++                } catch (Exception e) { /* skip a malformed meta value, keep the default */ }
 +            }
 +        }
 +        // Derive all similarity thresholds from the single sim_percent knob (clamped 50..99).
@@ -1719,7 +1723,7 @@ index 00000000..91c8eeb7
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..a8980558
+index 00000000..56589a10
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -1736,8 +1740,8 @@ index 00000000..a8980558
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 7;
-+    public static final String ADBLOCK_VERSION_NAME = "7.0";
++    public static final int ADBLOCK_VERSION = 8;
++    public static final String ADBLOCK_VERSION_NAME = "8.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
