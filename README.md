@@ -54,6 +54,9 @@ Telegram AAD прячет это всё — прямо на телефоне, б
 - **Заблокировать рекламу:** **тапни** по рекламному посту → во всплывающем меню выбери
   **«Заблокировать как рекламу»**. Скроется и он, и похожие.
 - **Дубликаты новостей:** ничего делать не нужно — прячутся сами.
+- **Порог схожести:** в меню **«три точки»** есть пункт **«Порог схожести: N%»** — тапай, чтобы
+  перебрать значения (70 → 75 → … → 95%). Выше процент = строже (прячется только почти идентичное),
+  ниже = агрессивнее. По умолчанию **75%**.
 - **Режим призрака:** быстрый переключатель в меню **«три точки»** на главном экране
   («Режим призрака: вкл/выкл»), либо **Настройки → Конфиденциальность → «Режим призрака»**.
   Включил — твои прочтения/онлайн/«печатает» не видны; выключил — всё как обычно.
@@ -107,6 +110,9 @@ device, with no servers and no tracking.
 - **Block an ad:** **tap** the ad post → choose **"Block as ad"** from the popup menu. It and similar
   posts disappear.
 - **Duplicate news:** nothing to do — hidden automatically.
+- **Similarity threshold:** the **three-dots menu** has a **"Similarity: N%"** item — tap to cycle
+  values (70 → 75 → … → 95%). Higher = stricter (only near-identical hidden), lower = more aggressive.
+  Default is **75%**.
 - **Ghost mode:** a quick toggle in the **three-dots menu** on the main screen ("Ghost mode: on/off"),
   or **Settings → Privacy and Security → "Ghost mode"**. On = your reads/online/typing are hidden;
   off = stock behavior. (Note: while Ghost is on, your reads aren't sent to the server, so chats stay
