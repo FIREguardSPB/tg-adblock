@@ -1,3 +1,8 @@
+# DrKLO/Telegram (Android) ad-blocker patch — "Telegram AAD"
+# base: DrKLO/Telegram @ 9b50143d8896d255d03155598937e4f3e28afd86  (12.8.1, build 6916)
+# apply: git fetch --depth 1 origin 9b50143d8896d255d03155598937e4f3e28afd86 && git checkout FETCH_HEAD && git apply android-adblock.patch
+# note: api_id/api_hash are injected at build time from CI secrets (TG_API_ID/TG_API_HASH); not in this patch.
+#
 diff --git a/TMessagesProj/config/debug/AndroidManifest.xml b/TMessagesProj/config/debug/AndroidManifest.xml
 index bd5fe417..2a722a52 100644
 --- a/TMessagesProj/config/debug/AndroidManifest.xml
