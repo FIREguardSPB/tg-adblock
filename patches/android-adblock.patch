@@ -1,8 +1,35 @@
-# DrKLO/Telegram (Android) ad-blocker patch — "Telegram AAD"
-# base: DrKLO/Telegram @ 9b50143d8896d255d03155598937e4f3e28afd86  (12.8.1, build 6916)
-# apply: git fetch --depth 1 origin 9b50143d8896d255d03155598937e4f3e28afd86 && git checkout FETCH_HEAD && git apply android-adblock.patch
-# note: api_id/api_hash are injected at build time from CI secrets (TG_API_ID/TG_API_HASH); not in this patch.
+# Telegram AAD — ad-blocker patch (semantic dedup, v9+)
+# base: DrKLO/Telegram @ 9b50143d8896d255d03155598937e4f3e28afd86 (12.8.1)
+# apply: git checkout that base, then: git apply android-adblock.patch
+# model: NOT in this patch (binary). CI copies assets/tgadblock/{rubert.onnx,rubert_vocab.txt}
+#        into TMessagesProj/src/main/assets/tgadblock/ before building. ONNX Runtime from Maven.
+#   rubert.onnx       sha256 c846bfd6d3d01599967a59a4fd36a4350ad4092f3c02232158ca67913ee71d9e
+#   rubert_vocab.txt  sha256 f056a69b097422652053bf87565c35543e5d81540ca4b7dddd28de4157a969e0
+# api_id/api_hash injected at build time from CI secrets (TG_API_ID/TG_API_HASH); not in this patch.
 #
+diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
+index 61a65305..166ebd8f 100644
+--- a/TMessagesProj/build.gradle
++++ b/TMessagesProj/build.gradle
+@@ -17,6 +17,7 @@ configurations.all {
+ }
+ 
+ dependencies {
++    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.20.0' // ad-blocker: on-device semantic embeddings (experimental)
+     implementation 'androidx.core:core:1.16.0'
+     implementation 'androidx.palette:palette:1.0.0'
+     implementation 'androidx.exifinterface:exifinterface:1.3.6'
+@@ -87,6 +88,10 @@ android {
+     buildToolsVersion '35.0.0'
+     ndkVersion "27.2.12479018"
+ 
++    aaptOptions {
++        noCompress "onnx" // ad-blocker: keep the embedding model uncompressed (mmap-friendly)
++    }
++
+     sourceSets.main.jniLibs.srcDirs = ['./jni/']
+ 
+     externalNativeBuild {
 diff --git a/TMessagesProj/config/debug/AndroidManifest.xml b/TMessagesProj/config/debug/AndroidManifest.xml
 index bd5fe417..2a722a52 100644
 --- a/TMessagesProj/config/debug/AndroidManifest.xml
@@ -68,6 +95,49 @@ index 53e0fa79..48c547f2 100644
          android:theme="@style/Theme.TMessages.Start"
          android:hardwareAccelerated="true"
          android:largeHeap="true"
+diff --git a/TMessagesProj/proguard-rules.pro b/TMessagesProj/proguard-rules.pro
+index aeab02b2..99b83e0c 100644
+--- a/TMessagesProj/proguard-rules.pro
++++ b/TMessagesProj/proguard-rules.pro
+@@ -113,4 +113,7 @@
+ 
+ # Use -keep to explicitly keep any other classes shrinking would remove
+ -dontoptimize
+--dontobfuscate
+\ No newline at end of file
++-dontobfuscate
++# ad-blocker: ONNX Runtime (semantic embeddings)
++-keep class ai.onnxruntime.** { *; }
++-dontwarn ai.onnxruntime.**
+diff --git a/TMessagesProj/src/main/AndroidManifest.xml b/TMessagesProj/src/main/AndroidManifest.xml
+index 6f6d377d..e1ee4af2 100644
+--- a/TMessagesProj/src/main/AndroidManifest.xml
++++ b/TMessagesProj/src/main/AndroidManifest.xml
+@@ -34,6 +34,9 @@
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+     <uses-permission android:name="android.permission.WAKE_LOCK" />
++    <!-- ad-blocker: needed so the keep-alive foreground service can start from the background
++         (no FCM on this build). Lets us pop the one-tap "ignore battery optimizations" dialog. -->
++    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
+@@ -570,6 +573,14 @@
+ 
+         <receiver android:name=".WearReplyReceiver" android:enabled="true"/>
+ 
++        <!-- ad-blocker: one-tap update download + install (DownloadManager). Exported so the
++             system DOWNLOAD_COMPLETE broadcast is delivered; ACTION_START is URL-validated. -->
++        <receiver android:name="com.tgadblock.UpdateInstallReceiver" android:exported="true">
++            <intent-filter>
++                <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
++            </intent-filter>
++        </receiver>
++
+         <service
+             android:name=".WearAuthListenerService"
+             android:exported="true">
 diff --git a/TMessagesProj/src/main/assets/adblock_default_rules.json b/TMessagesProj/src/main/assets/adblock_default_rules.json
 new file mode 100644
 index 00000000..125a739d
@@ -514,10 +584,10 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..5115ec89
+index 00000000..8d2b560e
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,517 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -543,6 +613,7 @@ index 00000000..5115ec89
 +    private static volatile AdFilter instance;
 +
 +    private final AdStore store;
++    private final android.content.Context appContext;
 +    private List<Core.Rule> rules;
 +    private Core.Config config;
 +    private final Map<Integer, Boolean> cache = new HashMap<>();
@@ -562,9 +633,14 @@ index 00000000..5115ec89
 +            "(?:https?://|www\\.)?([a-z0-9.-]+\\.(?:ru|com|net|org|io|me|app|xyz|cc|biz|info))");
 +
 +    private AdFilter(Context ctx) {
++        appContext = ctx.getApplicationContext();
 +        store = new AdStore(ctx);
 +        seedDefaultsIfNeeded(ctx);
 +        reload();
++        if (config != null && config.semanticEnabled) {
++            // warm the embedder off the UI thread if semantic mode was left on
++            journalExec.execute(() -> Embedder.get().ensureLoaded(appContext));
++        }
 +    }
 +
 +    // On first launch, load the bundled starter ruleset so common ads are hidden
@@ -644,12 +720,11 @@ index 00000000..5115ec89
 +        hiddenDups.addAll(store.loadHiddenDupKeys());
 +    }
 +
++    // User-facing similarity knob (one % drives ad + duplicate thresholds).
 +    public synchronized int getSimPercent() {
-+        return config != null ? config.simPercent : 75;
++        return config != null ? config.simPercent : 70;
 +    }
 +
-+    // Adjustable similarity threshold (50..99%). Higher = stricter. Re-derives all
-+    // thresholds and clears decision caches so the new value applies immediately.
 +    public synchronized void setSimPercent(int p) {
 +        if (p < 50) p = 50;
 +        if (p > 99) p = 99;
@@ -657,9 +732,40 @@ index 00000000..5115ec89
 +            store.setMeta("sim_percent", String.valueOf(p));
 +        } catch (Throwable ignore) {
 +        }
-+        // Re-derive thresholds + reload the journal OFF the UI thread: the menu tap that
-+        // calls this must not block on SQLite prune + the up-to-2500-row seen-post load.
++        reload(); // re-derive thresholds + clear decision caches so it applies immediately
++    }
++
++    public synchronized boolean isSemanticEnabled() {
++        return config != null && config.semanticEnabled;
++    }
++
++    // EXPERIMENTAL: turn on/off semantic (embedding) duplicate detection. reload() + model
++    // warm-up run OFF the UI thread so the menu tap doesn't block.
++    public synchronized boolean setSemanticEnabled(boolean on) {
++        try {
++            store.setMeta("dedup_semantic", on ? "1" : "0");
++        } catch (Throwable ignore) {
++        }
++        journalExec.execute(() -> {
++            reload();
++            if (on) Embedder.get().ensureLoaded(appContext);
++        });
++        return on;
++    }
++
++    public synchronized boolean isLexicalEnabled() {
++        return config == null || config.lexicalEnabled;
++    }
++
++    // EXPERIMENTAL: turn on/off the lexical (SimHash + keyword) duplicate path, independent
++    // of semantic. With both off, dedup is inert. reload() runs OFF the UI thread.
++    public synchronized boolean setLexicalEnabled(boolean on) {
++        try {
++            store.setMeta("dedup_lexical", on ? "1" : "0");
++        } catch (Throwable ignore) {
++        }
 +        journalExec.execute(this::reload);
++        return on;
 +    }
 +
 +    // Cross-channel duplicate news: hide a channel post if an EARLIER-dated, very
@@ -695,13 +801,17 @@ index 00000000..5115ec89
 +        Set<String> kw = Normalize.keywords(text);
 +        int date = mo.messageOwner.date;
 +        boolean dup = false;
-+        for (Core.SeenPost s : seen.values()) {
-+            if (s.dialogId == did) continue;     // only across different channels
-+            if (s.date >= date) continue;        // the earliest-dated copy is the original
-+            if (Core.hamming(s.simhash, sh) <= config.dupThreshold
-+                    || jaccard(s.keywords, kw) >= config.dupKwRatio) {
-+                dup = true;
-+                break;
++        // Render path is lexical-only; semantic duplicates surface via the hiddenDups
++        // fast-path above (journalOne computes embeddings off the UI thread on arrival).
++        if (config.lexicalEnabled) {
++            for (Core.SeenPost s : seen.values()) {
++                if (s.dialogId == did) continue;     // only across different channels
++                if (s.date >= date) continue;        // the earliest-dated copy is the original
++                if (Core.hamming(s.simhash, sh) <= config.dupThreshold
++                        || jaccard(s.keywords, kw) >= config.dupKwRatio) {
++                    dup = true;
++                    break;
++                }
 +            }
 +        }
 +        if (!seen.containsKey(key)) {
@@ -769,13 +879,25 @@ index 00000000..5115ec89
 +        if (config == null) return;
 +        long sh = Normalize.simhashOf(text);
 +        Set<String> kw = Normalize.keywords(text);
++        float[] emb = null;
++        if (config.semanticEnabled) {
++            try {
++                if (Embedder.get().ensureLoaded(appContext)) emb = Embedder.get().embed(text);
++            } catch (Throwable ignore) {
++            }
++        }
 +        boolean dup = hiddenDups.contains(key);
 +        if (!dup) {
 +            for (Core.SeenPost s : seen.values()) {
 +                if (s.dialogId == did) continue;
 +                if (s.date >= date) continue;
-+                if (Core.hamming(s.simhash, sh) <= config.dupThreshold
-+                        || jaccard(s.keywords, kw) >= config.dupKwRatio) {
++                boolean lexHit = config.lexicalEnabled
++                        && (Core.hamming(s.simhash, sh) <= config.dupThreshold
++                            || jaccard(s.keywords, kw) >= config.dupKwRatio);
++                // emb is non-null only when semantic is enabled, so semHit implies semantic on
++                boolean semHit = emb != null && s.embedding != null
++                        && Embedder.cosine(emb, s.embedding) >= config.cosThreshold;
++                if (lexHit || semHit) {
 +                    dup = true;
 +                    break;
 +                }
@@ -795,9 +917,10 @@ index 00000000..5115ec89
 +            p.simhash = sh;
 +            p.keywords = kw;
 +            p.date = date;
++            p.embedding = emb;
 +            seen.put(key, p);
 +            try {
-+                store.addSeenPost(key, did, sh, kw, date, System.currentTimeMillis() / 1000L);
++                store.addSeenPost(key, did, sh, kw, date, System.currentTimeMillis() / 1000L, emb);
 +            } catch (Throwable ignore) {
 +            }
 +            if (seen.size() > SEEN_CAP) {
@@ -984,10 +1107,10 @@ index 00000000..5115ec89
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdStore.java b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
 new file mode 100644
-index 00000000..cfa944c3
+index 00000000..bfa07188
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,337 @@
 +package com.tgadblock;
 +
 +import android.content.ContentValues;
@@ -1009,7 +1132,7 @@ index 00000000..cfa944c3
 + */
 +public final class AdStore extends SQLiteOpenHelper {
 +    private static final String DB_NAME = "adblock_rules.db";
-+    private static final int DB_VERSION = 4;
++    private static final int DB_VERSION = 7;
 +
 +    public AdStore(Context ctx) {
 +        super(ctx.getApplicationContext(), DB_NAME, null, DB_VERSION);
@@ -1031,7 +1154,7 @@ index 00000000..cfa944c3
 +                + "text_sample TEXT NOT NULL DEFAULT '',"
 +                + "enabled INTEGER NOT NULL DEFAULT 1)");
 +        setDefaultMeta(db, "schema_version", "1");
-+        setDefaultMeta(db, "simhash_threshold", "8");
++        setDefaultMeta(db, "simhash_threshold", "19"); // EXPERIMENTAL ~70%
 +        setDefaultMeta(db, "kw_ratio", "0.35");
 +        setDefaultMeta(db, "kw_min", "3");
 +        setDefaultMeta(db, "kw_strong_ratio", "0.7");
@@ -1047,8 +1170,28 @@ index 00000000..cfa944c3
 +            ensureHiddenDupsSchema(db); // v3: persistent hide-decisions
 +        }
 +        if (oldVersion < 4) {
-+            // v4: single adjustable similarity knob (default 75%) driving the thresholds.
-+            db.execSQL("INSERT OR IGNORE INTO meta(key, value) VALUES('sim_percent', '75')");
++            // EXPERIMENTAL: loosen ad/dup similarity to ~70% on existing installs, and add the
++            // sim_percent knob (default 70%) that drives all similarity thresholds.
++            db.execSQL("INSERT OR IGNORE INTO meta(key, value) VALUES('sim_percent', '70')");
++        }
++        if (oldVersion < 5) {
++            // EXPERIMENTAL semantic mode: per-post embedding column + opt-in toggle (off).
++            try {
++                db.execSQL("ALTER TABLE seen_posts ADD COLUMN embedding BLOB");
++            } catch (Throwable ignore) {
++            }
++            db.execSQL("INSERT OR IGNORE INTO meta(key, value) VALUES('dedup_semantic', '0')");
++        }
++        if (oldVersion < 6) {
++            // EXPERIMENTAL: independent lexical on/off (default on, preserving prior behavior).
++            db.execSQL("INSERT OR IGNORE INTO meta(key, value) VALUES('dedup_lexical', '1')");
++        }
++        if (oldVersion < 7) {
++            // New defaults: semantic ON, lexical OFF, 80%. Force-set on existing installs so the
++            // shipped behavior matches (this is the intended experimental default going forward).
++            db.execSQL("INSERT OR REPLACE INTO meta(key, value) VALUES('dedup_semantic', '1')");
++            db.execSQL("INSERT OR REPLACE INTO meta(key, value) VALUES('dedup_lexical', '0')");
++            db.execSQL("INSERT OR REPLACE INTO meta(key, value) VALUES('sim_percent', '80')");
 +        }
 +    }
 +
@@ -1060,11 +1203,14 @@ index 00000000..cfa944c3
 +                + "simhash TEXT NOT NULL,"
 +                + "keywords TEXT NOT NULL DEFAULT '',"
 +                + "msg_date INTEGER NOT NULL DEFAULT 0,"
-+                + "created_at INTEGER NOT NULL DEFAULT 0)");
++                + "created_at INTEGER NOT NULL DEFAULT 0,"
++                + "embedding BLOB)");
 +        setDefaultMeta(db, "dedup_enabled", "1");
-+        setDefaultMeta(db, "sim_percent", "75"); // single adjustable similarity knob
-+        setDefaultMeta(db, "dup_threshold", "8");
-+        setDefaultMeta(db, "dup_kw_ratio", "0.6");
++        setDefaultMeta(db, "dedup_lexical", "0");  // lexical (SimHash+keyword) path (off by default now)
++        setDefaultMeta(db, "dedup_semantic", "1"); // semantic (embedding) path on by default
++        setDefaultMeta(db, "sim_percent", "80"); // single user-facing similarity knob (default 80%)
++        setDefaultMeta(db, "dup_threshold", "19"); // EXPERIMENTAL ~70%
++        setDefaultMeta(db, "dup_kw_ratio", "0.7");  // EXPERIMENTAL ~70%
 +        setDefaultMeta(db, "dup_min_tokens", "8");
 +        setDefaultMeta(db, "dup_seen_max_age_days", "14");
 +        setDefaultMeta(db, "dup_hidden_max_age_days", "180");
@@ -1132,42 +1278,39 @@ index 00000000..cfa944c3
 +        try (Cursor c = db.rawQuery("SELECT key, value FROM meta", null)) {
 +            while (c.moveToNext()) {
 +                String k = c.getString(0), v = c.getString(1);
-+                try {
 +                switch (k) {
 +                    case "simhash_threshold": cfg.simhashThreshold = Integer.parseInt(v); break;
 +                    case "kw_ratio": cfg.kwRatio = Double.parseDouble(v); break;
 +                    case "kw_min": cfg.kwMin = Integer.parseInt(v); break;
 +                    case "kw_strong_ratio": cfg.kwStrongRatio = Double.parseDouble(v); break;
 +                    case "dedup_enabled": cfg.dedupEnabled = !"0".equals(v); break;
++                    case "dedup_lexical": cfg.lexicalEnabled = !"0".equals(v); break;
 +                    case "dup_threshold": cfg.dupThreshold = Integer.parseInt(v); break;
 +                    case "dup_kw_ratio": cfg.dupKwRatio = Double.parseDouble(v); break;
 +                    case "dup_min_tokens": cfg.dupMinTokens = Integer.parseInt(v); break;
 +                    case "dup_seen_max_age_days": cfg.dupSeenMaxAgeDays = Integer.parseInt(v); break;
 +                    case "dup_hidden_max_age_days": cfg.dupHiddenMaxAgeDays = Integer.parseInt(v); break;
 +                    case "mark_hidden_read": cfg.markHiddenRead = !"0".equals(v); break;
-+                    case "sim_percent": cfg.simPercent = Integer.parseInt(v); break;
++                    case "sim_percent": try { cfg.simPercent = Integer.parseInt(v); } catch (Exception e) {} break;
++                    case "dedup_semantic": cfg.semanticEnabled = !"0".equals(v); break;
 +                    default: break;
 +                }
-+                } catch (Exception e) { /* skip a malformed meta value, keep the default */ }
 +            }
 +        }
-+        // Derive all similarity thresholds from the single sim_percent knob (clamped 50..99).
-+        // Higher % = stricter (smaller SimHash distance, higher keyword ratio).
++        // The single similarity knob drives all thresholds (overrides the individual keys).
 +        int p = Math.max(50, Math.min(99, cfg.simPercent));
 +        cfg.simPercent = p;
-+        cfg.simhashThreshold = (int) Math.round(64.0 * (1.0 - p / 100.0));
++        cfg.simhashThreshold = Math.round(64f * (1f - p / 100f)); // ~p% bit-similarity
 +        cfg.dupThreshold = cfg.simhashThreshold;
 +        cfg.dupKwRatio = p / 100.0;
 +        cfg.kwStrongRatio = p / 100.0;
++        cfg.cosThreshold = p / 100.0; // semantic cosine threshold from the same knob
 +        return cfg;
 +    }
 +
 +    public void setMeta(String key, String value) {
-+        SQLiteDatabase db = getWritableDatabase();
-+        ContentValues cv = new ContentValues();
-+        cv.put("key", key);
-+        cv.put("value", value);
-+        db.insertWithOnConflict("meta", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
++        getWritableDatabase().execSQL(
++                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", new Object[]{key, value});
 +    }
 +
 +    // --- cross-channel duplicate-news journal ---
@@ -1187,7 +1330,7 @@ index 00000000..cfa944c3
 +    // Arrival-journaling variant: created_at is the real arrival time (for age-pruning),
 +    // while msg_date stays the message's own date (used by the "earliest is original" rule).
 +    public void addSeenPost(String key, long dialogId, long simhash, Set<String> keywords,
-+                            int msgDate, long arrivalSec) {
++                            int msgDate, long arrivalSec, float[] embedding) {
 +        SQLiteDatabase db = getWritableDatabase();
 +        ContentValues cv = new ContentValues();
 +        cv.put("key", key);
@@ -1196,7 +1339,24 @@ index 00000000..cfa944c3
 +        cv.put("keywords", join(keywords));
 +        cv.put("msg_date", msgDate);
 +        cv.put("created_at", arrivalSec);
++        if (embedding != null) cv.put("embedding", floatsToBytes(embedding));
 +        db.insertWithOnConflict("seen_posts", null, cv, SQLiteDatabase.CONFLICT_IGNORE);
++    }
++
++    static byte[] floatsToBytes(float[] f) {
++        if (f == null) return null;
++        java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(f.length * 4)
++                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
++        for (float x : f) bb.putFloat(x);
++        return bb.array();
++    }
++
++    static float[] bytesToFloats(byte[] b) {
++        if (b == null || b.length < 4 || (b.length % 4) != 0) return null;
++        java.nio.ByteBuffer bb = java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN);
++        float[] f = new float[b.length / 4];
++        for (int i = 0; i < f.length; i++) f[i] = bb.getFloat();
++        return f;
 +    }
 +
 +    public void addHiddenDup(String key, long nowSec) {
@@ -1232,7 +1392,7 @@ index 00000000..cfa944c3
 +        List<Core.SeenPost> out = new ArrayList<>();
 +        SQLiteDatabase db = getReadableDatabase();
 +        try (Cursor c = db.rawQuery(
-+                "SELECT key, dialog_id, simhash, keywords, msg_date FROM seen_posts "
++                "SELECT key, dialog_id, simhash, keywords, msg_date, embedding FROM seen_posts "
 +                + "ORDER BY msg_date DESC LIMIT ?", new String[]{Integer.toString(limit)})) {
 +            while (c.moveToNext()) {
 +                Core.SeenPost p = new Core.SeenPost();
@@ -1245,6 +1405,7 @@ index 00000000..cfa944c3
 +                p.simhash = Long.parseUnsignedLong(c.getString(2));
 +                p.keywords = split(c.isNull(3) ? "" : c.getString(3));
 +                p.date = c.getInt(4);
++                p.embedding = c.isNull(5) ? null : bytesToFloats(c.getBlob(5));
 +                out.add(p);
 +            }
 +        }
@@ -1287,12 +1448,69 @@ index 00000000..cfa944c3
 +        return out;
 +    }
 +}
+diff --git a/TMessagesProj/src/main/java/com/tgadblock/BackgroundConnection.java b/TMessagesProj/src/main/java/com/tgadblock/BackgroundConnection.java
+new file mode 100644
+index 00000000..35a49521
+--- /dev/null
++++ b/TMessagesProj/src/main/java/com/tgadblock/BackgroundConnection.java
+@@ -0,0 +1,51 @@
++package com.tgadblock;
++
++import android.app.Activity;
++import android.content.Context;
++import android.content.Intent;
++import android.content.SharedPreferences;
++import android.net.Uri;
++import android.os.Build;
++import android.os.PowerManager;
++import android.provider.Settings;
++
++/**
++ * Without FCM, background notifications depend on the keep-alive foreground service staying
++ * alive — and on Android 12+/16 a foreground service can only be (re)started from the background
++ * if the app is exempt from battery optimization. We can't grant that ourselves, so on startup we
++ * prompt the user once with the system one-tap dialog. (Aggressive OEMs like ColorOS may also need
++ * their own "auto-start / don't freeze" toggle, which only the user can set.)
++ */
++public final class BackgroundConnection {
++    private BackgroundConnection() {}
++
++    private static final String PREFS = "tgadblock_update";
++    private static final String KEY_ASKED = "batt_opt_asked";
++
++    public static boolean isIgnoringBatteryOptimizations(Context ctx) {
++        try {
++            PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
++            return pm != null && pm.isIgnoringBatteryOptimizations(ctx.getPackageName());
++        } catch (Throwable ignore) {
++            return true; // unknown -> don't nag
++        }
++    }
++
++    /** Prompt once per install for the battery-optimization exemption, if not already granted. */
++    public static void maybePrompt(Activity activity) {
++        if (activity == null) return;
++        try {
++            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
++            if (isIgnoringBatteryOptimizations(activity)) return;
++            SharedPreferences sp = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
++            if (sp.getBoolean(KEY_ASKED, false)) return;
++            sp.edit().putBoolean(KEY_ASKED, true).apply();
++            Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
++            i.setData(Uri.parse("package:" + activity.getPackageName()));
++            activity.startActivity(i);
++        } catch (Throwable ignore) {
++            // some OEMs don't honor the direct request action; the user can still grant it via
++            // system Settings -> Battery. We don't fall back to a settings deep-link to avoid loops.
++        }
++    }
++}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Core.java b/TMessagesProj/src/main/java/com/tgadblock/Core.java
 new file mode 100644
-index 00000000..af85f58e
+index 00000000..8441ec45
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Core.java
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,162 @@
 +package com.tgadblock;
 +
 +import java.util.List;
@@ -1349,21 +1567,26 @@ index 00000000..af85f58e
 +    }
 +
 +    public static final class Config {
-+        // simPercent is the single user-facing similarity knob (default 75%); getConfig()
-+        // derives simhashThreshold/dupThreshold/dupKwRatio/kwStrongRatio from it.
-+        public int simPercent = 75;
-+        public int simhashThreshold = 8;
++        // EXPERIMENTAL: thresholds loosened to ~70% similarity (SimHash distance 19/64 ≈ 70%).
++        // simPercent is the single user-facing knob; getConfig() derives the thresholds below from it.
++        public int simPercent = 80;
++        public int simhashThreshold = 19; // ads: SimHash near-dup match (was 8 ≈ 87%)
 +        public double kwRatio = 0.35;
 +        public int kwMin = 3;
 +        public double kwStrongRatio = 0.7;
 +        // cross-channel duplicate-news auto-hide
 +        public boolean dedupEnabled = true;
-+        public int dupThreshold = 8;       // SimHash Hamming distance (lower = more similar required)
-+        public double dupKwRatio = 0.6;    // OR: keyword Jaccard overlap
++        public int dupThreshold = 19;      // SimHash Hamming distance (lower = more similar required)
++        public double dupKwRatio = 0.7;    // OR: keyword Jaccard overlap
 +        public int dupMinTokens = 8;       // skip messages shorter than this (avoid hiding short posts)
 +        public int dupSeenMaxAgeDays = 14; // prune the seen-journal older than this
 +        public int dupHiddenMaxAgeDays = 180; // prune persisted hide-decisions older than this
 +        public boolean markHiddenRead = true; // mark hidden ads/dups read on the server (sync to desktop)
++        // EXPERIMENTAL: lexical (SimHash + keyword) and semantic (embeddings) dedup can be
++        // toggled INDEPENDENTLY. A post is a duplicate if EITHER enabled path matches.
++        public boolean lexicalEnabled = false;  // SimHash near-dup OR keyword Jaccard (off by default now)
++        public boolean semanticEnabled = true;  // on-device embedding cosine (on by default)
++        public double cosThreshold = 0.7; // derived from simPercent
 +    }
 +
 +    public static final class Rule {
@@ -1391,6 +1614,7 @@ index 00000000..af85f58e
 +        public long simhash = 0L;
 +        public Set<String> keywords = java.util.Collections.emptySet();
 +        public int date = 0;
++        public float[] embedding = null; // semantic vector (null unless semantic mode on)
 +    }
 +
 +    public static final class Match {
@@ -1447,6 +1671,146 @@ index 00000000..af85f58e
 +        m.reason = reason;
 +        m.distance = distance;
 +        return m;
++    }
++}
+diff --git a/TMessagesProj/src/main/java/com/tgadblock/Embedder.java b/TMessagesProj/src/main/java/com/tgadblock/Embedder.java
+new file mode 100644
+index 00000000..4c23e320
+--- /dev/null
++++ b/TMessagesProj/src/main/java/com/tgadblock/Embedder.java
+@@ -0,0 +1,134 @@
++package com.tgadblock;
++
++import android.content.Context;
++
++import java.io.ByteArrayOutputStream;
++import java.io.InputStream;
++import java.util.HashMap;
++import java.util.Map;
++
++import ai.onnxruntime.OnnxTensor;
++import ai.onnxruntime.OrtEnvironment;
++import ai.onnxruntime.OrtSession;
++
++/**
++ * On-device semantic text embedder (rubert-tiny2, int8 ONNX) for "smart" duplicate
++ * detection. Pure-local: WordPiece tokenize -> ONNX Runtime -> mean-pool -> L2-norm.
++ * Lazy: loads only when the semantic mode is enabled; any failure (old phone, missing
++ * model) leaves it unavailable and callers fall back to SimHash.
++ *
++ * IMPORTANT: embed() runs the transformer (~10-30 ms) — call it ONLY off the UI thread
++ * (the journaling executor), never from onMeasure/render.
++ */
++public final class Embedder {
++    public static final int DIM = 312;
++    private static final int MAX_TOKENS = 96;
++
++    private static volatile Embedder instance;
++    private OrtEnvironment env;
++    private OrtSession session;
++    private WordPiece tokenizer;
++    private volatile boolean ready;
++    private volatile boolean failed;
++
++    public static Embedder get() {
++        if (instance == null) {
++            synchronized (Embedder.class) {
++                if (instance == null) instance = new Embedder();
++            }
++        }
++        return instance;
++    }
++
++    /** Try to load the model+tokenizer once. Returns true if usable. Safe to call repeatedly. */
++    public synchronized boolean ensureLoaded(Context ctx) {
++        if (ready) return true;
++        if (failed) return false;
++        try {
++            tokenizer = WordPiece.fromAsset(ctx, "tgadblock/rubert_vocab.txt");
++            byte[] model = readAsset(ctx, "tgadblock/rubert.onnx");
++            env = OrtEnvironment.getEnvironment();
++            OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
++            try {
++                opts.setIntraOpNumThreads(1);
++            } catch (Throwable ignore) {
++            }
++            session = env.createSession(model, opts);
++            ready = true;
++            return true;
++        } catch (Throwable t) {
++            failed = true; // old device / missing lib / bad asset -> degrade to SimHash
++            return false;
++        }
++    }
++
++    public boolean isReady() {
++        return ready;
++    }
++
++    /** Returns an L2-normalized 312-d embedding, or null on any failure. */
++    public synchronized float[] embed(String text) {
++        if (!ready || text == null) return null;
++        try {
++            int[] ids = tokenizer.encode(text, MAX_TOKENS);
++            int n = ids.length;
++            long[][] inputIds = new long[1][n];
++            long[][] mask = new long[1][n];
++            long[][] types = new long[1][n];
++            for (int i = 0; i < n; i++) {
++                inputIds[0][i] = ids[i];
++                mask[0][i] = 1L;
++                types[0][i] = 0L;
++            }
++            Map<String, OnnxTensor> in = new HashMap<>();
++            OnnxTensor tIds = OnnxTensor.createTensor(env, inputIds);
++            OnnxTensor tMask = OnnxTensor.createTensor(env, mask);
++            OnnxTensor tTypes = OnnxTensor.createTensor(env, types);
++            in.put("input_ids", tIds);
++            in.put("attention_mask", tMask);
++            in.put("token_type_ids", tTypes);
++            float[] emb = new float[DIM];
++            try (OrtSession.Result res = session.run(in)) {
++                float[][][] hidden = (float[][][]) res.get(0).getValue(); // [1][n][DIM]
++                for (int t = 0; t < n; t++) {
++                    float[] row = hidden[0][t];
++                    for (int d = 0; d < DIM; d++) emb[d] += row[d];
++                }
++            } finally {
++                tIds.close();
++                tMask.close();
++                tTypes.close();
++            }
++            double norm = 0;
++            for (int d = 0; d < DIM; d++) {
++                emb[d] /= n; // mean pool (all positions masked-in)
++                norm += (double) emb[d] * emb[d];
++            }
++            norm = Math.sqrt(norm);
++            if (norm > 1e-9) {
++                for (int d = 0; d < DIM; d++) emb[d] /= (float) norm;
++            }
++            return emb;
++        } catch (Throwable t) {
++            return null;
++        }
++    }
++
++    /** Cosine similarity of two L2-normalized vectors = dot product. */
++    public static double cosine(float[] a, float[] b) {
++        if (a == null || b == null || a.length != b.length) return -1;
++        double s = 0;
++        for (int i = 0; i < a.length; i++) s += (double) a[i] * b[i];
++        return s;
++    }
++
++    private static byte[] readAsset(Context ctx, String path) throws Exception {
++        try (InputStream is = ctx.getAssets().open(path)) {
++            ByteArrayOutputStream bos = new ByteArrayOutputStream(1 << 20);
++            byte[] buf = new byte[1 << 16];
++            int r;
++            while ((r = is.read(buf)) > 0) bos.write(buf, 0, r);
++            return bos.toByteArray();
++        }
 +    }
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Normalize.java b/TMessagesProj/src/main/java/com/tgadblock/Normalize.java
@@ -1551,10 +1915,10 @@ index 00000000..683ee79a
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/UpdateChecker.java b/TMessagesProj/src/main/java/com/tgadblock/UpdateChecker.java
 new file mode 100644
-index 00000000..91c8eeb7
+index 00000000..9ec6c275
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/UpdateChecker.java
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,169 @@
 +package com.tgadblock;
 +
 +import android.app.Notification;
@@ -1671,13 +2035,16 @@ index 00000000..91c8eeb7
 +                        NotificationManager.IMPORTANCE_DEFAULT));
 +            }
 +
-+            Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-+            view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            // Tap -> download the APK via DownloadManager and launch the installer (handled by
++            // UpdateInstallReceiver), instead of opening the GitHub page in a browser.
++            Intent dl = new Intent(app, UpdateInstallReceiver.class);
++            dl.setAction(UpdateInstallReceiver.ACTION_START);
++            dl.putExtra(UpdateInstallReceiver.EXTRA_URL, url);
 +            int piFlags = PendingIntent.FLAG_UPDATE_CURRENT;
 +            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
 +                piFlags |= PendingIntent.FLAG_IMMUTABLE;
 +            }
-+            PendingIntent pi = PendingIntent.getActivity(app, 0, view, piFlags);
++            PendingIntent pi = PendingIntent.getBroadcast(app, 0, dl, piFlags);
 +
 +            String title = ru ? "Доступна новая версия Telegram AAD"
 +                              : "New Telegram AAD version available";
@@ -1721,9 +2088,131 @@ index 00000000..91c8eeb7
 +        return new String(bos.toByteArray(), StandardCharsets.UTF_8);
 +    }
 +}
+diff --git a/TMessagesProj/src/main/java/com/tgadblock/UpdateInstallReceiver.java b/TMessagesProj/src/main/java/com/tgadblock/UpdateInstallReceiver.java
+new file mode 100644
+index 00000000..b4f4cebe
+--- /dev/null
++++ b/TMessagesProj/src/main/java/com/tgadblock/UpdateInstallReceiver.java
+@@ -0,0 +1,116 @@
++package com.tgadblock;
++
++import android.app.DownloadManager;
++import android.content.BroadcastReceiver;
++import android.content.Context;
++import android.content.Intent;
++import android.content.SharedPreferences;
++import android.net.Uri;
++import android.os.Environment;
++import android.widget.Toast;
++
++import java.util.Locale;
++
++/**
++ * Turns the "update available" notification into a one-tap download+install instead of just
++ * opening GitHub in a browser. On tap we enqueue the release APK in the system DownloadManager
++ * (background, progress shown in the shade, survives process death); when it finishes we launch
++ * the package installer. The user still confirms once in the system "Install" dialog — a fully
++ * silent install needs device-owner/root, which we don't have. Package + signing key are
++ * unchanged, so it's an in-place update that keeps all blocked-ad rules.
++ */
++public final class UpdateInstallReceiver extends BroadcastReceiver {
++    public static final String ACTION_START = "com.tgadblock.UPDATE_DOWNLOAD";
++    public static final String EXTRA_URL = "url";
++
++    private static final String PREFS = "tgadblock_update";
++    private static final String KEY_DLID = "download_id";
++    private static final String APK_NAME = "tg-adblock-update.apk";
++
++    @Override
++    public void onReceive(Context context, Intent intent) {
++        if (context == null || intent == null) return;
++        final Context app = context.getApplicationContext();
++        try {
++            String action = intent.getAction();
++            if (ACTION_START.equals(action)) {
++                startDownload(app, intent.getStringExtra(EXTRA_URL));
++            } else if (DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(action)) {
++                onDownloadComplete(app, intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1));
++            }
++        } catch (Throwable ignore) {
++        }
++    }
++
++    private void startDownload(Context app, String url) {
++        if (url == null || url.isEmpty()) return;
++        // SECURITY: this receiver is exported (to receive DOWNLOAD_COMPLETE), so another app could
++        // send ACTION_START. Only ever download from our own GitHub release URLs — never an
++        // attacker-supplied one. Anything else is ignored.
++        if (!url.startsWith("https://github.com/" + Version.REPO + "/")) return;
++        boolean ru = isRu();
++        // No APK asset (only the release page) -> just open it like before.
++        if (!url.toLowerCase(Locale.ROOT).endsWith(".apk")) {
++            openUrl(app, url);
++            return;
++        }
++        DownloadManager dm = (DownloadManager) app.getSystemService(Context.DOWNLOAD_SERVICE);
++        if (dm == null) {
++            openUrl(app, url);
++            return;
++        }
++        try {
++            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
++            req.setTitle(ru ? "Обновление Telegram AAD" : "Telegram AAD update");
++            req.setMimeType("application/vnd.android.package-archive");
++            // app-specific external dir: no storage permission needed, readable for install
++            req.setDestinationInExternalFilesDir(app, Environment.DIRECTORY_DOWNLOADS, APK_NAME);
++            req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
++            long id = dm.enqueue(req);
++            app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(KEY_DLID, id).apply();
++            Toast.makeText(app, ru ? "Скачивание обновления…" : "Downloading update…",
++                    Toast.LENGTH_SHORT).show();
++        } catch (Throwable t) {
++            openUrl(app, url);
++        }
++    }
++
++    private void onDownloadComplete(Context app, long completed) {
++        if (completed < 0) return;
++        SharedPreferences sp = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
++        if (completed != sp.getLong(KEY_DLID, -1)) return; // not our download
++        DownloadManager dm = (DownloadManager) app.getSystemService(Context.DOWNLOAD_SERVICE);
++        if (dm == null) return;
++        Uri uri = dm.getUriForDownloadedFile(completed); // content:// uri, grantable to installer
++        if (uri == null) return;
++        try {
++            Intent install = new Intent(Intent.ACTION_VIEW);
++            install.setDataAndType(uri, "application/vnd.android.package-archive");
++            install.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
++            app.startActivity(install);
++        } catch (Throwable ignore) {
++            // if the system installer can't be launched, the DownloadManager notification remains
++            // tappable as a fallback (it views the same apk).
++        }
++    }
++
++    private void openUrl(Context app, String url) {
++        try {
++            Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
++            view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            app.startActivity(view);
++        } catch (Throwable ignore) {
++        }
++    }
++
++    private static boolean isRu() {
++        try {
++            org.telegram.messenger.LocaleController.LocaleInfo li =
++                    org.telegram.messenger.LocaleController.getInstance().getCurrentLocaleInfo();
++            return li != null && li.shortName != null
++                    && li.shortName.toLowerCase(Locale.ROOT).startsWith("ru");
++        } catch (Throwable ignore) {
++            return false;
++        }
++    }
++}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..56589a10
+index 00000000..216939d3
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -1740,14 +2229,181 @@ index 00000000..56589a10
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 8;
-+    public static final String ADBLOCK_VERSION_NAME = "8.0";
++    public static final int ADBLOCK_VERSION = 9;
++    public static final String ADBLOCK_VERSION_NAME = "9.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
 +}
+diff --git a/TMessagesProj/src/main/java/com/tgadblock/WordPiece.java b/TMessagesProj/src/main/java/com/tgadblock/WordPiece.java
+new file mode 100644
+index 00000000..961475ea
+--- /dev/null
++++ b/TMessagesProj/src/main/java/com/tgadblock/WordPiece.java
+@@ -0,0 +1,161 @@
++package com.tgadblock;
++
++import android.content.Context;
++
++import java.io.BufferedReader;
++import java.io.InputStream;
++import java.io.InputStreamReader;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++
++/**
++ * Pure-Java BERT WordPiece tokenizer for rubert-tiny2 (cased, no accent stripping).
++ * Faithful port of HuggingFace BertTokenizer's BasicTokenizer + WordpieceTokenizer,
++ * so token ids match the model. No native deps.
++ */
++public final class WordPiece {
++    private final Map<String, Integer> vocab;
++    private final int unkId;
++    private final int clsId;
++    private final int sepId;
++    private static final int MAX_CHARS_PER_WORD = 100;
++
++    private WordPiece(Map<String, Integer> vocab) {
++        this.vocab = vocab;
++        this.unkId = vocab.containsKey("[UNK]") ? vocab.get("[UNK]") : 1;
++        this.clsId = vocab.containsKey("[CLS]") ? vocab.get("[CLS]") : 2;
++        this.sepId = vocab.containsKey("[SEP]") ? vocab.get("[SEP]") : 3;
++    }
++
++    public static WordPiece fromAsset(Context ctx, String assetPath) throws Exception {
++        Map<String, Integer> v = new HashMap<>(100000);
++        try (InputStream is = ctx.getAssets().open(assetPath);
++             BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
++            String line;
++            int idx = 0;
++            while ((line = br.readLine()) != null) {
++                // vocab.txt: one token per line; trailing \r already stripped by readLine
++                v.put(line, idx++);
++            }
++        }
++        return new WordPiece(v);
++    }
++
++    /** Encode to ids with [CLS] ... [SEP], truncated so the total length <= maxLen. */
++    public int[] encode(String text, int maxLen) {
++        List<Integer> ids = new ArrayList<>();
++        ids.add(clsId);
++        int budget = Math.max(2, maxLen) - 2; // room for [CLS] and [SEP]
++        outer:
++        for (String basic : basicTokenize(text)) {
++            for (int wp : wordpiece(basic)) {
++                if (ids.size() - 1 >= budget) break outer;
++                ids.add(wp);
++            }
++        }
++        ids.add(sepId);
++        int[] out = new int[ids.size()];
++        for (int i = 0; i < out.length; i++) out[i] = ids.get(i);
++        return out;
++    }
++
++    // ---- BasicTokenizer (cased) ----
++    private List<String> basicTokenize(String text) {
++        StringBuilder cleaned = new StringBuilder(text.length());
++        for (int i = 0; i < text.length(); ) {
++            int cp = text.codePointAt(i);
++            i += Character.charCount(cp);
++            if (cp == 0 || cp == 0xFFFD || isControl(cp)) continue;
++            if (isWhitespace(cp)) {
++                cleaned.append(' ');
++            } else if (isChinese(cp)) {
++                cleaned.append(' ').appendCodePoint(cp).append(' ');
++            } else {
++                cleaned.appendCodePoint(cp);
++            }
++        }
++        List<String> out = new ArrayList<>();
++        for (String token : cleaned.toString().trim().split("\\s+")) {
++            if (token.isEmpty()) continue;
++            // run_split_on_punc
++            StringBuilder cur = new StringBuilder();
++            for (int i = 0; i < token.length(); ) {
++                int cp = token.codePointAt(i);
++                i += Character.charCount(cp);
++                if (isPunct(cp)) {
++                    if (cur.length() > 0) { out.add(cur.toString()); cur.setLength(0); }
++                    out.add(new String(Character.toChars(cp)));
++                } else {
++                    cur.appendCodePoint(cp);
++                }
++            }
++            if (cur.length() > 0) out.add(cur.toString());
++        }
++        return out;
++    }
++
++    // ---- WordpieceTokenizer ----
++    private List<Integer> wordpiece(String token) {
++        List<Integer> out = new ArrayList<>();
++        if (token.length() > MAX_CHARS_PER_WORD) {
++            out.add(unkId);
++            return out;
++        }
++        int start = 0;
++        boolean bad = false;
++        List<Integer> sub = new ArrayList<>();
++        int n = token.length();
++        while (start < n) {
++            int end = n;
++            Integer curId = null;
++            while (start < end) {
++                String piece = token.substring(start, end);
++                if (start > 0) piece = "##" + piece;
++                Integer id = vocab.get(piece);
++                if (id != null) { curId = id; break; }
++                end--;
++            }
++            if (curId == null) { bad = true; break; }
++            sub.add(curId);
++            start = end;
++        }
++        if (bad) out.add(unkId);
++        else out.addAll(sub);
++        return out;
++    }
++
++    // ---- BERT char predicates ----
++    private static boolean isWhitespace(int cp) {
++        if (cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r') return true;
++        return Character.getType(cp) == Character.SPACE_SEPARATOR;
++    }
++
++    private static boolean isControl(int cp) {
++        if (cp == '\t' || cp == '\n' || cp == '\r') return false;
++        int t = Character.getType(cp);
++        return t == Character.CONTROL || t == Character.FORMAT
++                || t == Character.PRIVATE_USE || t == Character.SURROGATE
++                || t == Character.UNASSIGNED || t == Character.LINE_SEPARATOR
++                || t == Character.PARAGRAPH_SEPARATOR;
++    }
++
++    private static boolean isPunct(int cp) {
++        if ((cp >= 33 && cp <= 47) || (cp >= 58 && cp <= 64)
++                || (cp >= 91 && cp <= 96) || (cp >= 123 && cp <= 126)) return true;
++        int t = Character.getType(cp);
++        return t == Character.CONNECTOR_PUNCTUATION || t == Character.DASH_PUNCTUATION
++                || t == Character.START_PUNCTUATION || t == Character.END_PUNCTUATION
++                || t == Character.INITIAL_QUOTE_PUNCTUATION || t == Character.FINAL_QUOTE_PUNCTUATION
++                || t == Character.OTHER_PUNCTUATION;
++    }
++
++    private static boolean isChinese(int cp) {
++        return (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF)
++                || (cp >= 0x20000 && cp <= 0x2A6DF) || (cp >= 0x2A700 && cp <= 0x2B73F)
++                || (cp >= 0x2B740 && cp <= 0x2B81F) || (cp >= 0x2B820 && cp <= 0x2CEAF)
++                || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x2F800 && cp <= 0x2FA1F);
++    }
++}
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
-index fc43c648..569248cd 100644
+index fc43c648..952a7fc5 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
 @@ -289,6 +289,12 @@ public class ApplicationLoader extends Application {
@@ -1763,11 +2419,35 @@ index fc43c648..569248cd 100644
          if (BuildVars.LOGS_ENABLED) {
              FileLog.d("app start time = " + (startTime = SystemClock.elapsedRealtime()));
              try {
+@@ -353,7 +359,8 @@ public class ApplicationLoader extends Application {
+         if (preferences.contains("pushService")) {
+             enabled = preferences.getBoolean("pushService", true);
+         } else {
+-            enabled = MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("keepAliveService", false);
++            // ad-blocker: default the keep-alive foreground service ON (no FCM on this .aad build).
++            enabled = MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("keepAliveService", true);
+         }
+         if (enabled) {
+             try {
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index 622adb0f..d11ac989 100644
+index 622adb0f..f087e506 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-@@ -10237,7 +10237,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -1562,8 +1562,11 @@ public class MessagesController extends BaseController implements NotificationCe
+         canRevokePmInbox = mainPreferences.getBoolean("canRevokePmInbox", canRevokePmInbox);
+         preloadFeaturedStickers = mainPreferences.getBoolean("preloadFeaturedStickers", false);
+         youtubePipType = mainPreferences.getString("youtubePipType", "disabled");
+-        keepAliveService = mainPreferences.getBoolean("keepAliveService", false);
+-        backgroundConnection = mainPreferences.getBoolean("keepAliveService", false);
++        // ad-blocker: this repackaged .aad build cannot use FCM push (no valid Firebase app +
++        // private api_id), so default the background keep-alive connection ON — it's the only
++        // way to get background notifications without push. User can disable in Notifications.
++        keepAliveService = mainPreferences.getBoolean("keepAliveService", true);
++        backgroundConnection = mainPreferences.getBoolean("keepAliveService", true);
+         promoDialogId = mainPreferences.getLong("proxy_dialog", 0);
+         nextPromoInfoCheckTime = mainPreferences.getInt("nextPromoInfoCheckTime", 0);
+         promoDialogType = mainPreferences.getInt("promo_dialog_type", 0);
+@@ -10237,7 +10240,7 @@ public class MessagesController extends BaseController implements NotificationCe
          checkReadTasks();
  
          if (getUserConfig().isClientActivated()) {
@@ -1776,7 +2456,7 @@ index 622adb0f..d11ac989 100644
                  if (ApplicationLoader.mainInterfacePausedStageQueueTime != 0 && Math.abs(ApplicationLoader.mainInterfacePausedStageQueueTime - System.currentTimeMillis()) > 1000) {
                      if (statusSettingState != 1 && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
                          statusSettingState = 1;
-@@ -10306,7 +10306,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -10306,7 +10309,7 @@ public class MessagesController extends BaseController implements NotificationCe
          int currentServerTime = getConnectionsManager().getCurrentTime();
          if (Math.abs(System.currentTimeMillis() - lastViewsCheckTime) >= 5000) {
              lastViewsCheckTime = System.currentTimeMillis();
@@ -1785,7 +2465,7 @@ index 622adb0f..d11ac989 100644
                  for (int a = 0; a < channelViewsToSend.size(); a++) {
                      long key = channelViewsToSend.keyAt(a);
                      TLRPC.TL_messages_getMessagesViews req = new TLRPC.TL_messages_getMessagesViews();
-@@ -11103,6 +11103,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -11103,6 +11106,7 @@ public class MessagesController extends BaseController implements NotificationCe
          if (dialogId == selfId) {
              return false;
          }
@@ -1793,7 +2473,7 @@ index 622adb0f..d11ac989 100644
          if (dialogId < 0) {
              if (ChatObject.getSendAsPeerId(getChat(-dialogId), getChatFull(-dialogId)) != selfId) {
                  return false;
-@@ -14006,6 +14007,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14006,6 +14010,7 @@ public class MessagesController extends BaseController implements NotificationCe
  
      public void addToViewsQueue(MessageObject messageObject) {
          if (messageObject == null) return;
@@ -1801,7 +2481,7 @@ index 622adb0f..d11ac989 100644
          Utilities.stageQueue.postRunnable(() -> {
              long peer = messageObject.getDialogId();
              int id = messageObject.getId();
-@@ -14074,6 +14076,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14074,6 +14079,7 @@ public class MessagesController extends BaseController implements NotificationCe
          long dialogId = messageObject.getDialogId();
          getMessagesStorage().markMessagesContentAsRead(dialogId, arrayList, 0, 0);
          getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, dialogId, arrayList);
@@ -1809,7 +2489,7 @@ index 622adb0f..d11ac989 100644
          if (messageObject.getId() < 0) {
              markMessageAsRead(messageObject.getDialogId(), messageObject.messageOwner.random_id, Integer.MIN_VALUE);
          } else {
-@@ -14226,6 +14229,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14226,6 +14232,7 @@ public class MessagesController extends BaseController implements NotificationCe
      }
  
      private void completeReadTask(ReadTask task) {
@@ -1817,7 +2497,7 @@ index 622adb0f..d11ac989 100644
          if (task.replyId != 0 && task.monoForumPeerId == 0) {
              TLRPC.TL_messages_readDiscussion req = new TLRPC.TL_messages_readDiscussion();
              req.msg_id = (int) task.replyId;
-@@ -14304,6 +14308,33 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14304,6 +14311,49 @@ public class MessagesController extends BaseController implements NotificationCe
          }
      }
  
@@ -1836,13 +2516,29 @@ index 622adb0f..d11ac989 100644
 +                if (!ChatObject.isChannel(chat) || chat.megagroup) {
 +                    return; // broadcast channels only
 +                }
-+                TLRPC.TL_channels_readHistory req = new TLRPC.TL_channels_readHistory();
-+                req.channel = getInputChannel(channelId);
-+                if (req.channel == null) {
-+                    return;
++                // Clear the LOCAL unread state too (badge + notification), not just the server —
++                // otherwise a hidden ad/dup as the last message keeps showing an unread count on
++                // the phone itself. Only safe to clear locally when the hidden message is the
++                // newest one (else we'd wrongly clear a newer legit unread post).
++                TLRPC.Dialog dialog = dialogs_dict.get(dialogId);
++                boolean hiddenIsLatest = (dialog == null) || (maxId >= dialog.top_message);
++                if (hiddenIsLatest) {
++                    // local read-state + (in non-Ghost) a server read task; Ghost-independent locally
++                    markDialogAsRead(dialogId, maxId, 0, 0, false, 0, 0, true, 0);
 +                }
-+                req.max_id = maxId;
-+                getConnectionsManager().sendRequest(req, (response, error) -> {});
++                // Server read: send directly when markDialogAsRead didn't run, or when Ghost mode
++                // suppressed its read task in completeReadTask(). Broadcast-channel reads don't
++                // reveal us, so this is safe in Ghost. (No double-send: the non-Ghost latest case
++                // is already covered by markDialogAsRead's read task.)
++                if (!hiddenIsLatest || SharedConfig.ghostMode) {
++                    TLRPC.TL_channels_readHistory req = new TLRPC.TL_channels_readHistory();
++                    req.channel = getInputChannel(channelId);
++                    if (req.channel == null) {
++                        return;
++                    }
++                    req.max_id = maxId;
++                    getConnectionsManager().sendRequest(req, (response, error) -> {});
++                }
 +            } catch (Throwable ignore) {
 +            }
 +        });
@@ -1851,7 +2547,7 @@ index 622adb0f..d11ac989 100644
      public void markDialogAsReadNow(long dialogId, long replyId) {
          Utilities.stageQueue.postRunnable(() -> {
              if (replyId != 0) {
-@@ -14332,6 +14363,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14332,6 +14382,7 @@ public class MessagesController extends BaseController implements NotificationCe
              return;
          }
          getMessagesStorage().resetMentionsCount(dialogId, topicId, 0);
@@ -1859,7 +2555,7 @@ index 622adb0f..d11ac989 100644
          TLRPC.TL_messages_readMentions req = new TLRPC.TL_messages_readMentions();
          req.peer = getInputPeer(dialogId);
          if (topicId != 0) {
-@@ -20829,6 +20861,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -20829,6 +20880,7 @@ public class MessagesController extends BaseController implements NotificationCe
              topicsController.markAllReactionsAsRead(-dialogId, topicId);
          }
          getMessagesStorage().updateUnreadReactionsCount(dialogId, topicId, 0);
@@ -1867,7 +2563,7 @@ index 622adb0f..d11ac989 100644
          TLRPC.TL_messages_readReactions req = new TLRPC.TL_messages_readReactions();
          req.peer = getInputPeer(dialogId);
  
-@@ -20844,6 +20877,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -20844,6 +20896,7 @@ public class MessagesController extends BaseController implements NotificationCe
          getConnectionsManager().sendRequest(req, (response, error) -> {
  
          });
@@ -1875,7 +2571,7 @@ index 622adb0f..d11ac989 100644
          NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.updateInterfaces, UPDATE_MASK_REACTIONS_READ);
      }
  
-@@ -21170,6 +21204,11 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -21170,6 +21223,11 @@ public class MessagesController extends BaseController implements NotificationCe
          if (mode == ChatActivity.MODE_QUICK_REPLIES) {
              QuickRepliesController.getInstance(currentAccount).checkLocalMessages(messages);
          }
@@ -1912,6 +2608,75 @@ index 401dadb7..d840b9ef 100644
          if (messageObjects.isEmpty()) {
              if (countDownLatch != null) {
                  countDownLatch.countDown();
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsService.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsService.java
+index a32cd26b..9f9c4a41 100644
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsService.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsService.java
+@@ -13,19 +13,64 @@ import android.content.Intent;
+ import android.content.SharedPreferences;
+ import android.os.IBinder;
+ 
++import androidx.core.app.NotificationCompat;
++
+ public class NotificationsService extends Service {
+ 
++    // ad-blocker: id for the persistent keep-alive notification (distinct from other services).
++    private static final int KEEP_ALIVE_ID = 38;
++
+     @Override
+     public void onCreate() {
+         super.onCreate();
+         ApplicationLoader.postInitApplication();
++        startKeepAliveForeground();
+     }
+ 
+     @Override
+     public int onStartCommand(Intent intent, int flags, int startId) {
++        startKeepAliveForeground();
+         return START_STICKY;
+     }
+ 
++    // ad-blocker: this repackaged .aad build has no working FCM push (fake Firebase client +
++    // private api_id), so a real foreground service is the ONLY way to keep the MTProto push
++    // connection alive while backgrounded. Stock NotificationsService was a no-op stub (never
++    // called startForeground), so on Android 12+/16 the OS killed the process within minutes and
++    // messages only synced on app open. We now hold an ongoing low-importance notification.
++    // (Requires the app to be battery-optimization exempt, else startForeground from the
++    // background is denied — see com.tgadblock.BackgroundConnection.)
++    private void startKeepAliveForeground() {
++        try {
++            NotificationsController.checkOtherNotificationsChannel();
++            boolean ru = isRu();
++            NotificationCompat.Builder b = new NotificationCompat.Builder(
++                    ApplicationLoader.applicationContext,
++                    NotificationsController.OTHER_NOTIFICATIONS_CHANNEL);
++            b.setSmallIcon(R.drawable.notification);
++            b.setContentTitle("Telegram AAD");
++            b.setContentText(ru ? "Фоновое подключение для уведомлений"
++                                : "Background connection for notifications");
++            b.setOngoing(true);
++            b.setShowWhen(false);
++            b.setPriority(NotificationCompat.PRIORITY_MIN);
++            startForeground(KEEP_ALIVE_ID, b.build());
++        } catch (Throwable ignore) {
++            // denied (e.g. not battery-exempt) -> stay a plain service; we'll prompt for the
++            // exemption from the UI so the next start succeeds.
++        }
++    }
++
++    private static boolean isRu() {
++        try {
++            LocaleController.LocaleInfo li = LocaleController.getInstance().getCurrentLocaleInfo();
++            return li != null && li.shortName != null
++                    && li.shortName.toLowerCase().startsWith("ru");
++        } catch (Throwable ignore) {
++            return false;
++        }
++    }
++
+     @Override
+     public IBinder onBind(Intent intent) {
+         return null;
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java b/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
 index 63a75772..8eb73bf8 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
@@ -1947,6 +2712,21 @@ index 63a75772..8eb73bf8 100644
      public static void toggleFastWallpaperDisabled() {
          fastWallpaperDisabled = !fastWallpaperDisabled;
          SharedPreferences preferences = MessagesController.getGlobalMainSettings();
+diff --git a/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java b/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
+index ba3aacd3..26dd518e 100644
+--- a/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
++++ b/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
+@@ -285,7 +285,9 @@ public class ConnectionsManager extends BaseController {
+         if (preferences.contains("pushConnection")) {
+             return preferences.getBoolean("pushConnection", true);
+         } else {
+-            return MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("backgroundConnection", false);
++            // ad-blocker: default the background push connection ON — without FCM it's the data path
++            // that actually receives messages while backgrounded (paired with the keep-alive FGS).
++            return MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("backgroundConnection", true);
+         }
+     }
+ 
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
 index 6a24ff08..db44f051 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
@@ -2260,10 +3040,10 @@ index c4bb90c5..0af21943 100644
              if ((selectedObject.type == MessageObject.TYPE_TEXT || selectedObject.type == MessageObject.TYPE_ARTICLE || selectedObject.isAnimatedEmoji() || selectedObject.isAnimatedEmojiStickers() || getMessageCaption(selectedObject, selectedObjectGroup) != null) && !noforwardsOrPaidMedia && !message.isExpiredStory()) {
                  items.add(LocaleController.getString(R.string.Copy));
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-index 74fc75ab..90d97d6b 100644
+index 74fc75ab..8ae5f73a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-@@ -13411,6 +13411,47 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -13411,6 +13411,86 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                  args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
                  presentFragment(new ChatActivity(args));
              });
@@ -2287,13 +3067,13 @@ index 74fc75ab..90d97d6b 100644
 +                } catch (Throwable ignore) {
 +                }
 +            });
-+            // ad-blocker: adjustable similarity threshold (ads + duplicate-news). Cycles 70..95%.
-+            int simP = 75;
++            // ad-blocker: adjustable similarity threshold (one knob for ads + duplicates).
++            int simP = 70;
 +            try {
 +                if (com.tgadblock.AdFilter.getInstance() != null) simP = com.tgadblock.AdFilter.getInstance().getSimPercent();
 +            } catch (Throwable e) {
 +            }
-+            io.add(R.drawable.msg_block,
++            io.add(R.drawable.msg_settings_old,
 +                    (ghRuF ? "Порог схожести: " : "Similarity: ") + simP + "%", () -> {
 +                try {
 +                    int cur = com.tgadblock.AdFilter.getInstance().getSimPercent();
@@ -2308,9 +3088,70 @@ index 74fc75ab..90d97d6b 100644
 +                } catch (Throwable ignore) {
 +                }
 +            });
++            // ad-blocker: EXPERIMENTAL semantic (embedding) duplicate detection toggle.
++            boolean semOn = false;
++            try {
++                if (com.tgadblock.AdFilter.getInstance() != null) semOn = com.tgadblock.AdFilter.getInstance().isSemanticEnabled();
++            } catch (Throwable e) {
++            }
++            io.add(R.drawable.msg_block,
++                    (ghRuF ? "Блок по смыслу: " : "Semantic block: ")
++                    + (semOn ? (ghRuF ? "вкл" : "on") : (ghRuF ? "выкл" : "off")), () -> {
++                try {
++                    boolean now = !com.tgadblock.AdFilter.getInstance().isSemanticEnabled();
++                    com.tgadblock.AdFilter.getInstance().setSemanticEnabled(now);
++                    android.widget.Toast.makeText(ApplicationLoader.applicationContext,
++                            (ghRuF ? "Блок по смыслу: " : "Semantic block: ")
++                            + (now ? (ghRuF ? "включено (грузит модель…)" : "on (loading model…)")
++                                   : (ghRuF ? "выключено" : "off")),
++                            android.widget.Toast.LENGTH_SHORT).show();
++                } catch (Throwable ignore) {
++                }
++            });
++            // ad-blocker: EXPERIMENTAL lexical (SimHash + keyword) duplicate path toggle.
++            boolean lexOn = true;
++            try {
++                if (com.tgadblock.AdFilter.getInstance() != null) lexOn = com.tgadblock.AdFilter.getInstance().isLexicalEnabled();
++            } catch (Throwable e) {
++            }
++            io.add(R.drawable.msg_block,
++                    (ghRuF ? "Лексическое сравнение: " : "Lexical match: ")
++                    + (lexOn ? (ghRuF ? "вкл" : "on") : (ghRuF ? "выкл" : "off")), () -> {
++                try {
++                    boolean now = !com.tgadblock.AdFilter.getInstance().isLexicalEnabled();
++                    com.tgadblock.AdFilter.getInstance().setLexicalEnabled(now);
++                    android.widget.Toast.makeText(ApplicationLoader.applicationContext,
++                            (ghRuF ? "Лексическое сравнение: " : "Lexical match: ")
++                            + (now ? (ghRuF ? "включено" : "on") : (ghRuF ? "выключено" : "off")),
++                            android.widget.Toast.LENGTH_SHORT).show();
++                } catch (Throwable ignore) {
++                }
++            });
              if (ApplicationLoader.applicationLoaderInstance != null) {
                  ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
              }
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+index 9cd2739a..8b2e8332 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
+@@ -406,6 +406,17 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+         AndroidUtilities.checkDisplaySize(this, getResources().getConfiguration());
+         currentAccount = UserConfig.selectedAccount;
+         registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
++        // ad-blocker: no FCM on this build -> background notifications need the keep-alive
++        // foreground service, which can only run if battery-optimization is disabled. Prompt once
++        // (after the UI settles, only when logged in) with the system one-tap dialog.
++        AndroidUtilities.runOnUIThread(() -> {
++            try {
++                if (UserConfig.getInstance(UserConfig.selectedAccount).isClientActivated()) {
++                    com.tgadblock.BackgroundConnection.maybePrompt(LaunchActivity.this);
++                }
++            } catch (Throwable ignore) {
++            }
++        }, 2500);
+         if (!UserConfig.getInstance(currentAccount).isClientActivated()) {
+             Intent intent = getIntent();
+             boolean isProxy = false;
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/PrivacySettingsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/PrivacySettingsActivity.java
 index 6ce417f1..7807fcd6 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/PrivacySettingsActivity.java

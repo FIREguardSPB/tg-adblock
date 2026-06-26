@@ -84,6 +84,16 @@ jobs:
             exit 1
           fi
 
+      - name: Add on-device semantic model (rubert-tiny2; kept out of the patch as a binary)
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          DST=upstream/TMessagesProj/src/main/assets/tgadblock
+          mkdir -p "$DST"
+          cp assets/tgadblock/rubert.onnx "$DST/"
+          cp assets/tgadblock/rubert_vocab.txt "$DST/"
+          echo "c846bfd6d3d01599967a59a4fd36a4350ad4092f3c02232158ca67913ee71d9e  $DST/rubert.onnx" | sha256sum -c -
+          echo "f056a69b097422652053bf87565c35543e5d81540ca4b7dddd28de4157a969e0  $DST/rubert_vocab.txt" | sha256sum -c -
+
       - name: Inject private api_id/api_hash from secrets
         if: steps.check.outputs.exists == 'false'
         env:
