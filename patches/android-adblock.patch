@@ -1,4 +1,4 @@
-# Telegram AAD — ad-blocker patch (semantic dedup, v9+)
+# Telegram AAD — ad-blocker patch (semantic dedup, v10)
 # base: DrKLO/Telegram @ 9b50143d8896d255d03155598937e4f3e28afd86 (12.8.1)
 # apply: git checkout that base, then: git apply android-adblock.patch
 # model: NOT in this patch (binary). CI copies assets/tgadblock/{rubert.onnx,rubert_vocab.txt}
@@ -584,10 +584,10 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..8d2b560e
+index 00000000..98b5e0d8
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,517 @@
+@@ -0,0 +1,560 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -625,9 +625,25 @@ index 00000000..8d2b560e
 +    private final Set<String> hiddenDups = new HashSet<>();
 +    // per-dialog highest msgId already marked read on the server (throttles render-time marking)
 +    private final Map<Long, Integer> lastMarkedRead = new HashMap<>();
-+    // off-UI journaling of arriving posts (SimHash + SQLite insert)
++    // off-UI journaling of arriving posts (SimHash + embedding + SQLite insert). Runs at LOW OS
++    // priority so the semantic embedding never competes with the UI / foreground work (heat + jank).
 +    private final java.util.concurrent.ExecutorService journalExec =
-+            java.util.concurrent.Executors.newSingleThreadExecutor();
++            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
++                Thread t = new Thread(() -> {
++                    // Android background cgroup: caps this thread's CPU share so embedding can't
++                    // pin cores / heat the phone while the user is doing something else.
++                    try {
++                        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
++                    } catch (Throwable ignore) {
++                    }
++                    r.run();
++                }, "tgad-journal");
++                t.setDaemon(true);
++                return t;
++            });
++    // Skip embedding for big backlog bursts (reconnect syncs of history) to bound CPU: those posts
++    // still get cheap lexical journaling; only steady-state arrivals get the (costly) embedding.
++    private static final int EMBED_BATCH_CAP = 60;
 +
 +    private static final Pattern DOMAIN = Pattern.compile(
 +            "(?:https?://|www\\.)?([a-z0-9.-]+\\.(?:ru|com|net|org|io|me|app|xyz|cc|biz|info))");
@@ -865,22 +881,24 @@ index 00000000..8d2b560e
 +            batch.add(new Object[]{mo.getDialogId() + ":" + mo.getId(), mo.getDialogId(), text, mo.messageOwner.date, ad, mo.getId()});
 +        }
 +        if (batch.isEmpty()) return;
++        // A large batch is a reconnect/history sync burst -> skip the costly embedding for it.
++        final boolean allowEmbed = batch.size() <= EMBED_BATCH_CAP;
 +        journalExec.execute(() -> {
 +            for (Object[] row : batch) {
 +                try {
-+                    journalOne(account, (String) row[0], (Long) row[1], (String) row[2], (Integer) row[3], (Boolean) row[4], (Integer) row[5]);
++                    journalOne(account, (String) row[0], (Long) row[1], (String) row[2], (Integer) row[3], (Boolean) row[4], (Integer) row[5], allowEmbed);
 +                } catch (Throwable ignore) {
 +                }
 +            }
 +        });
 +    }
 +
-+    private synchronized void journalOne(int account, String key, long did, String text, int date, boolean ad, int msgId) {
++    private synchronized void journalOne(int account, String key, long did, String text, int date, boolean ad, int msgId, boolean allowEmbed) {
 +        if (config == null) return;
 +        long sh = Normalize.simhashOf(text);
 +        Set<String> kw = Normalize.keywords(text);
 +        float[] emb = null;
-+        if (config.semanticEnabled) {
++        if (config.semanticEnabled && allowEmbed) {
 +            try {
 +                if (Embedder.get().ensureLoaded(appContext)) emb = Embedder.get().embed(text);
 +            } catch (Throwable ignore) {
@@ -1072,22 +1090,47 @@ index 00000000..8d2b560e
 +    }
 +
 +    public synchronized boolean isAd(MessageObject mo) {
-+        if (mo == null || rules.isEmpty()) return false;
++        if (mo == null) return false;
 +        Integer key = mo.getId();
 +        Boolean cached = cache.get(key);
 +        if (cached != null) return cached;
 +        String text = effectiveText(mo);
 +        boolean blocked = false;
 +        if (text != null && !text.trim().isEmpty()) {
-+            Core.MsgFeat f = new Core.MsgFeat();
-+            f.senderId = senderId(mo);
-+            f.simhash = Normalize.simhashOf(text);
-+            f.tokens = Normalize.tokenSet(text);
-+            f.domains = domains(text);
-+            blocked = Core.classify(rules, f, config).blocked;
++            // Cheap heuristic first: Russian law forces explicit ad labels (erid token, the
++            // "О рекламодателе" link, #реклама, an "ИНН <digits>" advertiser disclosure). These
++            // are near-certain ad markers, so hide the post even with no learned rule.
++            if (looksLikeLabeledAd(text)) {
++                blocked = true;
++            } else if (!rules.isEmpty()) {
++                Core.MsgFeat f = new Core.MsgFeat();
++                f.senderId = senderId(mo);
++                f.simhash = Normalize.simhashOf(text);
++                f.tokens = Normalize.tokenSet(text);
++                f.domains = domains(text);
++                blocked = Core.classify(rules, f, config).blocked;
++            }
 +        }
 +        cache.put(key, blocked);
 +        return blocked;
++    }
++
++    // Legally-mandated Russian ad-disclosure markers — strong, low-false-positive signals.
++    private static final java.util.regex.Pattern AD_ERID =
++            java.util.regex.Pattern.compile("\\berid\\b|erid\\s*[=:]");
++    private static final java.util.regex.Pattern AD_INN =
++            java.util.regex.Pattern.compile("инн\\s*[:№]?\\s*\\d{10,12}");
++
++    static boolean looksLikeLabeledAd(String text) {
++        if (text == null) return false;
++        String t = text.toLowerCase(java.util.Locale.ROOT);
++        if (t.contains("о рекламодателе")) return true;
++        if (t.contains("#реклама")) return true;
++        if (t.contains("tglink.io")) return true;
++        if (AD_ERID.matcher(t).find()) return true;
++        // "Реклама." / "Реклама:" disclosure paired with an advertiser INN
++        if ((t.contains("реклама.") || t.contains("реклама:")) && AD_INN.matcher(t).find()) return true;
++        return false;
 +    }
 +
 +    public synchronized void blockItem(MessageObject mo) {
@@ -1107,10 +1150,10 @@ index 00000000..8d2b560e
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdStore.java b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
 new file mode 100644
-index 00000000..bfa07188
+index 00000000..8f5ad890
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
-@@ -0,0 +1,337 @@
+@@ -0,0 +1,342 @@
 +package com.tgadblock;
 +
 +import android.content.ContentValues;
@@ -1132,7 +1175,7 @@ index 00000000..bfa07188
 + */
 +public final class AdStore extends SQLiteOpenHelper {
 +    private static final String DB_NAME = "adblock_rules.db";
-+    private static final int DB_VERSION = 7;
++    private static final int DB_VERSION = 8;
 +
 +    public AdStore(Context ctx) {
 +        super(ctx.getApplicationContext(), DB_NAME, null, DB_VERSION);
@@ -1193,6 +1236,11 @@ index 00000000..bfa07188
 +            db.execSQL("INSERT OR REPLACE INTO meta(key, value) VALUES('dedup_lexical', '0')");
 +            db.execSQL("INSERT OR REPLACE INTO meta(key, value) VALUES('sim_percent', '80')");
 +        }
++        if (oldVersion < 8) {
++            // Feedback: semantic-only missed near-identical duplicates. Turn the (cheap) lexical
++            // path back ON alongside semantic for better coverage. Leaves the user's sim_percent.
++            db.execSQL("INSERT OR REPLACE INTO meta(key, value) VALUES('dedup_lexical', '1')");
++        }
 +    }
 +
 +    // Idempotent: the "seen posts" journal + dedup tuning defaults.
@@ -1206,7 +1254,7 @@ index 00000000..bfa07188
 +                + "created_at INTEGER NOT NULL DEFAULT 0,"
 +                + "embedding BLOB)");
 +        setDefaultMeta(db, "dedup_enabled", "1");
-+        setDefaultMeta(db, "dedup_lexical", "0");  // lexical (SimHash+keyword) path (off by default now)
++        setDefaultMeta(db, "dedup_lexical", "1");  // lexical (SimHash+keyword) path — cheap, on by default
 +        setDefaultMeta(db, "dedup_semantic", "1"); // semantic (embedding) path on by default
 +        setDefaultMeta(db, "sim_percent", "80"); // single user-facing similarity knob (default 80%)
 +        setDefaultMeta(db, "dup_threshold", "19"); // EXPERIMENTAL ~70%
@@ -1507,7 +1555,7 @@ index 00000000..35a49521
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Core.java b/TMessagesProj/src/main/java/com/tgadblock/Core.java
 new file mode 100644
-index 00000000..8441ec45
+index 00000000..23bf9d0c
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Core.java
 @@ -0,0 +1,162 @@
@@ -1584,8 +1632,8 @@ index 00000000..8441ec45
 +        public boolean markHiddenRead = true; // mark hidden ads/dups read on the server (sync to desktop)
 +        // EXPERIMENTAL: lexical (SimHash + keyword) and semantic (embeddings) dedup can be
 +        // toggled INDEPENDENTLY. A post is a duplicate if EITHER enabled path matches.
-+        public boolean lexicalEnabled = false;  // SimHash near-dup OR keyword Jaccard (off by default now)
-+        public boolean semanticEnabled = true;  // on-device embedding cosine (on by default)
++        public boolean lexicalEnabled = true;   // SimHash near-dup OR keyword Jaccard (cheap; catches identical dups)
++        public boolean semanticEnabled = true;  // on-device embedding cosine (catches paraphrases)
 +        public double cosThreshold = 0.7; // derived from simPercent
 +    }
 +
@@ -1675,10 +1723,10 @@ index 00000000..8441ec45
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Embedder.java b/TMessagesProj/src/main/java/com/tgadblock/Embedder.java
 new file mode 100644
-index 00000000..4c23e320
+index 00000000..933d89f2
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Embedder.java
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,139 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -1730,10 +1778,15 @@ index 00000000..4c23e320
 +            byte[] model = readAsset(ctx, "tgadblock/rubert.onnx");
 +            env = OrtEnvironment.getEnvironment();
 +            OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
-+            try {
-+                opts.setIntraOpNumThreads(1);
-+            } catch (Throwable ignore) {
-+            }
++            // Keep CPU/heat in check: single-threaded, sequential, and — critically — tell the ORT
++            // thread pool NOT to busy-spin while idle. By default it spin-waits between inferences,
++            // pinning a core at ~100% even when no post is being embedded. allow_spinning=0 makes
++            // the threads block instead. This is the main fix for the "2 cores at 100%" heat.
++            try { opts.setIntraOpNumThreads(1); } catch (Throwable ignore) {}
++            try { opts.setInterOpNumThreads(1); } catch (Throwable ignore) {}
++            try { opts.setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL); } catch (Throwable ignore) {}
++            try { opts.addConfigEntry("session.intra_op.allow_spinning", "0"); } catch (Throwable ignore) {}
++            try { opts.addConfigEntry("session.inter_op.allow_spinning", "0"); } catch (Throwable ignore) {}
 +            session = env.createSession(model, opts);
 +            ready = true;
 +            return true;
@@ -2212,7 +2265,7 @@ index 00000000..b4f4cebe
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..216939d3
+index 00000000..081df7c2
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -2229,8 +2282,8 @@ index 00000000..216939d3
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 9;
-+    public static final String ADBLOCK_VERSION_NAME = "9.0";
++    public static final int ADBLOCK_VERSION = 10;
++    public static final String ADBLOCK_VERSION_NAME = "10.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
