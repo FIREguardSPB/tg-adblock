@@ -8,7 +8,7 @@ on:
       ref:
         description: 'DrKLO/Telegram ref (tag or commit). Empty on schedule = latest release.'
         required: false
-        default: '9b50143d8896d255d03155598937e4f3e28afd86'   # base the patch is known to apply to (12.8.1)
+        default: '9bcf3d2769c6d3f07105a992e5d9493e33ac3348'   # base the patch is known to apply to (12.9.0)
 
 permissions:
   contents: write              # needed to publish releases
@@ -31,7 +31,7 @@ jobs:
           # scheduled/empty builds to the known-good pinned base so they reproduce a
           # working APK (and become a no-op once that ref is released). To build a
           # newer upstream, dispatch this workflow with an explicit ref.
-          BASE=9b50143d8896d255d03155598937e4f3e28afd86
+          BASE=9bcf3d2769c6d3f07105a992e5d9493e33ac3348
           REF="${{ github.event.inputs.ref }}"
           if [ -z "$REF" ]; then
             REF="$BASE"

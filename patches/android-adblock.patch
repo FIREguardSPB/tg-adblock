@@ -1,12 +1,3 @@
-# Telegram AAD — ad-blocker patch (semantic dedup, v10)
-# base: DrKLO/Telegram @ 9b50143d8896d255d03155598937e4f3e28afd86 (12.8.1)
-# apply: git checkout that base, then: git apply android-adblock.patch
-# model: NOT in this patch (binary). CI copies assets/tgadblock/{rubert.onnx,rubert_vocab.txt}
-#        into TMessagesProj/src/main/assets/tgadblock/ before building. ONNX Runtime from Maven.
-#   rubert.onnx       sha256 c846bfd6d3d01599967a59a4fd36a4350ad4092f3c02232158ca67913ee71d9e
-#   rubert_vocab.txt  sha256 f056a69b097422652053bf87565c35543e5d81540ca4b7dddd28de4157a969e0
-# api_id/api_hash injected at build time from CI secrets (TG_API_ID/TG_API_HASH); not in this patch.
-#
 diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
 index 61a65305..166ebd8f 100644
 --- a/TMessagesProj/build.gradle
@@ -2265,7 +2256,7 @@ index 00000000..b4f4cebe
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..081df7c2
+index 00000000..72052975
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -2282,8 +2273,8 @@ index 00000000..081df7c2
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 10;
-+    public static final String ADBLOCK_VERSION_NAME = "10.0";
++    public static final int ADBLOCK_VERSION = 11;
++    public static final String ADBLOCK_VERSION_NAME = "11.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
@@ -2456,10 +2447,10 @@ index 00000000..961475ea
 +    }
 +}
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
-index fc43c648..952a7fc5 100644
+index fc43c648..c2979620 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/ApplicationLoader.java
-@@ -289,6 +289,12 @@ public class ApplicationLoader extends Application {
+@@ -289,6 +289,34 @@ public class ApplicationLoader extends Application {
  
          super.onCreate();
  
@@ -2469,10 +2460,32 @@ index fc43c648..952a7fc5 100644
 +        } catch (Throwable ignore) {
 +        }
 +
++        // ad-blocker: maybeCheck() used to run ONLY here in onCreate, but the forced keep-alive
++        // service keeps this process alive for days, so onCreate rarely re-runs and the "daily"
++        // update check effectively never repeated after first launch. Re-trigger it on every
++        // activity resume — maybeCheck() is internally gated to once per 24h, so this is cheap.
++        try {
++            registerActivityLifecycleCallbacks(new android.app.Application.ActivityLifecycleCallbacks() {
++                @Override public void onActivityResumed(android.app.Activity activity) {
++                    try {
++                        com.tgadblock.UpdateChecker.maybeCheck(applicationContext);
++                    } catch (Throwable ignore) {
++                    }
++                }
++                @Override public void onActivityCreated(android.app.Activity activity, android.os.Bundle savedInstanceState) {}
++                @Override public void onActivityStarted(android.app.Activity activity) {}
++                @Override public void onActivityPaused(android.app.Activity activity) {}
++                @Override public void onActivityStopped(android.app.Activity activity) {}
++                @Override public void onActivitySaveInstanceState(android.app.Activity activity, android.os.Bundle outState) {}
++                @Override public void onActivityDestroyed(android.app.Activity activity) {}
++            });
++        } catch (Throwable ignore) {
++        }
++
          if (BuildVars.LOGS_ENABLED) {
              FileLog.d("app start time = " + (startTime = SystemClock.elapsedRealtime()));
              try {
-@@ -353,7 +359,8 @@ public class ApplicationLoader extends Application {
+@@ -353,7 +381,8 @@ public class ApplicationLoader extends Application {
          if (preferences.contains("pushService")) {
              enabled = preferences.getBoolean("pushService", true);
          } else {
@@ -2483,10 +2496,10 @@ index fc43c648..952a7fc5 100644
          if (enabled) {
              try {
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-index 622adb0f..f087e506 100644
+index 2e65a2ca..17f819d2 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java
-@@ -1562,8 +1562,11 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -1601,8 +1601,11 @@ public class MessagesController extends BaseController implements NotificationCe
          canRevokePmInbox = mainPreferences.getBoolean("canRevokePmInbox", canRevokePmInbox);
          preloadFeaturedStickers = mainPreferences.getBoolean("preloadFeaturedStickers", false);
          youtubePipType = mainPreferences.getString("youtubePipType", "disabled");
@@ -2500,7 +2513,7 @@ index 622adb0f..f087e506 100644
          promoDialogId = mainPreferences.getLong("proxy_dialog", 0);
          nextPromoInfoCheckTime = mainPreferences.getInt("nextPromoInfoCheckTime", 0);
          promoDialogType = mainPreferences.getInt("promo_dialog_type", 0);
-@@ -10237,7 +10240,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -10509,7 +10512,7 @@ public class MessagesController extends BaseController implements NotificationCe
          checkReadTasks();
  
          if (getUserConfig().isClientActivated()) {
@@ -2509,7 +2522,7 @@ index 622adb0f..f087e506 100644
                  if (ApplicationLoader.mainInterfacePausedStageQueueTime != 0 && Math.abs(ApplicationLoader.mainInterfacePausedStageQueueTime - System.currentTimeMillis()) > 1000) {
                      if (statusSettingState != 1 && (lastStatusUpdateTime == 0 || Math.abs(System.currentTimeMillis() - lastStatusUpdateTime) >= 55000 || offlineSent)) {
                          statusSettingState = 1;
-@@ -10306,7 +10309,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -10578,7 +10581,7 @@ public class MessagesController extends BaseController implements NotificationCe
          int currentServerTime = getConnectionsManager().getCurrentTime();
          if (Math.abs(System.currentTimeMillis() - lastViewsCheckTime) >= 5000) {
              lastViewsCheckTime = System.currentTimeMillis();
@@ -2518,7 +2531,7 @@ index 622adb0f..f087e506 100644
                  for (int a = 0; a < channelViewsToSend.size(); a++) {
                      long key = channelViewsToSend.keyAt(a);
                      TLRPC.TL_messages_getMessagesViews req = new TLRPC.TL_messages_getMessagesViews();
-@@ -11103,6 +11106,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -11375,6 +11378,7 @@ public class MessagesController extends BaseController implements NotificationCe
          if (dialogId == selfId) {
              return false;
          }
@@ -2526,7 +2539,7 @@ index 622adb0f..f087e506 100644
          if (dialogId < 0) {
              if (ChatObject.getSendAsPeerId(getChat(-dialogId), getChatFull(-dialogId)) != selfId) {
                  return false;
-@@ -14006,6 +14010,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14278,6 +14282,7 @@ public class MessagesController extends BaseController implements NotificationCe
  
      public void addToViewsQueue(MessageObject messageObject) {
          if (messageObject == null) return;
@@ -2534,7 +2547,7 @@ index 622adb0f..f087e506 100644
          Utilities.stageQueue.postRunnable(() -> {
              long peer = messageObject.getDialogId();
              int id = messageObject.getId();
-@@ -14074,6 +14079,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14346,6 +14351,7 @@ public class MessagesController extends BaseController implements NotificationCe
          long dialogId = messageObject.getDialogId();
          getMessagesStorage().markMessagesContentAsRead(dialogId, arrayList, 0, 0);
          getNotificationCenter().postNotificationName(NotificationCenter.messagesReadContent, dialogId, arrayList);
@@ -2542,7 +2555,7 @@ index 622adb0f..f087e506 100644
          if (messageObject.getId() < 0) {
              markMessageAsRead(messageObject.getDialogId(), messageObject.messageOwner.random_id, Integer.MIN_VALUE);
          } else {
-@@ -14226,6 +14232,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14498,6 +14504,7 @@ public class MessagesController extends BaseController implements NotificationCe
      }
  
      private void completeReadTask(ReadTask task) {
@@ -2550,7 +2563,7 @@ index 622adb0f..f087e506 100644
          if (task.replyId != 0 && task.monoForumPeerId == 0) {
              TLRPC.TL_messages_readDiscussion req = new TLRPC.TL_messages_readDiscussion();
              req.msg_id = (int) task.replyId;
-@@ -14304,6 +14311,49 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14576,6 +14583,49 @@ public class MessagesController extends BaseController implements NotificationCe
          }
      }
  
@@ -2600,7 +2613,7 @@ index 622adb0f..f087e506 100644
      public void markDialogAsReadNow(long dialogId, long replyId) {
          Utilities.stageQueue.postRunnable(() -> {
              if (replyId != 0) {
-@@ -14332,6 +14382,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -14604,6 +14654,7 @@ public class MessagesController extends BaseController implements NotificationCe
              return;
          }
          getMessagesStorage().resetMentionsCount(dialogId, topicId, 0);
@@ -2608,7 +2621,7 @@ index 622adb0f..f087e506 100644
          TLRPC.TL_messages_readMentions req = new TLRPC.TL_messages_readMentions();
          req.peer = getInputPeer(dialogId);
          if (topicId != 0) {
-@@ -20829,6 +20880,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -21471,6 +21522,7 @@ public class MessagesController extends BaseController implements NotificationCe
              topicsController.markAllReactionsAsRead(-dialogId, topicId);
          }
          getMessagesStorage().updateUnreadReactionsCount(dialogId, topicId, 0);
@@ -2616,7 +2629,7 @@ index 622adb0f..f087e506 100644
          TLRPC.TL_messages_readReactions req = new TLRPC.TL_messages_readReactions();
          req.peer = getInputPeer(dialogId);
  
-@@ -20844,6 +20896,7 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -21486,6 +21538,7 @@ public class MessagesController extends BaseController implements NotificationCe
          getConnectionsManager().sendRequest(req, (response, error) -> {
  
          });
@@ -2624,7 +2637,7 @@ index 622adb0f..f087e506 100644
          NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.updateInterfaces, UPDATE_MASK_REACTIONS_READ);
      }
  
-@@ -21170,6 +21223,11 @@ public class MessagesController extends BaseController implements NotificationCe
+@@ -21812,6 +21865,11 @@ public class MessagesController extends BaseController implements NotificationCe
          if (mode == ChatActivity.MODE_QUICK_REPLIES) {
              QuickRepliesController.getInstance(currentAccount).checkLocalMessages(messages);
          }
@@ -2637,7 +2650,7 @@ index 622adb0f..f087e506 100644
  
          if (lastMessage == null || scheduled) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
-index 401dadb7..d840b9ef 100644
+index 0a8a9bd0..a61ce9a3 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/NotificationsController.java
 @@ -1044,6 +1044,20 @@ public class NotificationsController extends BaseController implements Notificat
@@ -2731,7 +2744,7 @@ index a32cd26b..9f9c4a41 100644
      public IBinder onBind(Intent intent) {
          return null;
 diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java b/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
-index 63a75772..8eb73bf8 100644
+index bbc3a939..752ff516 100644
 --- a/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
 +++ b/TMessagesProj/src/main/java/org/telegram/messenger/SharedConfig.java
 @@ -216,6 +216,7 @@ public class SharedConfig {
@@ -2742,7 +2755,7 @@ index 63a75772..8eb73bf8 100644
      public static boolean fastWallpaperDisabled;
      public static boolean frameMetricsEnabled;
  
-@@ -609,6 +610,7 @@ public class SharedConfig {
+@@ -608,6 +609,7 @@ public class SharedConfig {
              useSystemEmoji = preferences.getBoolean("useSystemEmoji", false);
              useSystemBoldFont = preferences.getBoolean("useSystemBoldFont", false);
              forceForumTabs = preferences.getBoolean("forceForumTabs", false);
@@ -2750,7 +2763,7 @@ index 63a75772..8eb73bf8 100644
              fastWallpaperDisabled = preferences.getBoolean("fastWallpaperDisabled", false);
              frameMetricsEnabled = preferences.getBoolean("frameMetricsEnabled", false);
              if (useSystemBoldFont) {
-@@ -1126,6 +1128,14 @@ public class SharedConfig {
+@@ -1125,6 +1127,14 @@ public class SharedConfig {
          editor.apply();
      }
  
@@ -2766,7 +2779,7 @@ index 63a75772..8eb73bf8 100644
          fastWallpaperDisabled = !fastWallpaperDisabled;
          SharedPreferences preferences = MessagesController.getGlobalMainSettings();
 diff --git a/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java b/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
-index ba3aacd3..26dd518e 100644
+index 470e3c4a..75ac15d4 100644
 --- a/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
 +++ b/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java
 @@ -285,7 +285,9 @@ public class ConnectionsManager extends BaseController {
@@ -2781,10 +2794,10 @@ index ba3aacd3..26dd518e 100644
      }
  
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
-index 6a24ff08..db44f051 100644
+index 7d7291c0..08730f93 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/ChatMessageCell.java
-@@ -13605,6 +13605,30 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -13625,6 +13625,30 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
  
      @Override
      protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
@@ -2815,7 +2828,7 @@ index 6a24ff08..db44f051 100644
          if (currentMessageObject != null && (currentMessageObject.checkLayout() || lastHeight != AndroidUtilities.displaySize.y)) {
              inLayout = true;
              MessageObject messageObject = currentMessageObject;
-@@ -13629,6 +13653,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -13649,6 +13673,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
          );
      }
  
@@ -2825,7 +2838,7 @@ index 6a24ff08..db44f051 100644
      private int additionalPaddingHeight;
  
      public int getAdditionalPaddingHeight() {
-@@ -14211,6 +14238,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -14231,6 +14258,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawContent(Canvas canvas, boolean preview) {
@@ -2835,7 +2848,7 @@ index 6a24ff08..db44f051 100644
          if (preview != (currentMessageObject != null && currentMessageObject.preview)) {
              return;
          }
-@@ -15373,6 +15403,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -15393,6 +15423,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawLinkPreview(Canvas canvas, float alpha) {
@@ -2843,7 +2856,7 @@ index 6a24ff08..db44f051 100644
          if (!currentMessageObject.isSponsored() && !currentMessageObject.isUnsupported() && !hasLinkPreview && !hasGamePreview && !hasInvoicePreview) {
              return;
          }
-@@ -16094,6 +16125,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -16114,6 +16145,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawFactCheck(Canvas canvas, float alpha) {
@@ -2851,7 +2864,7 @@ index 6a24ff08..db44f051 100644
          if (currentPosition != null && !currentPosition.last) {
              return;
          }
-@@ -16177,6 +16209,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -16197,6 +16229,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawFactCheckText(Canvas canvas, float alpha) {
@@ -2859,7 +2872,7 @@ index 6a24ff08..db44f051 100644
          if (currentPosition != null && !currentPosition.last) {
              return;
          }
-@@ -19955,6 +19988,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -20020,6 +20053,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
          drawInternal(canvas);
      }
      public void drawInternal(Canvas canvas) {
@@ -2869,7 +2882,7 @@ index 6a24ff08..db44f051 100644
          if (currentMessageObject == null) {
              return;
          }
-@@ -20636,6 +20672,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -20704,6 +20740,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawCommentButton(Canvas canvas, float alpha) {
@@ -2879,7 +2892,7 @@ index 6a24ff08..db44f051 100644
          if (drawSideButton != 3) {
              return;
          }
-@@ -20789,6 +20828,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -20857,6 +20896,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawOutboundsContent(Canvas canvas) {
@@ -2889,7 +2902,7 @@ index 6a24ff08..db44f051 100644
          if (channelRecommendationsCell != null && currentMessageObject != null && currentMessageObject.type == MessageObject.TYPE_JOINED_CHANNEL) {
              channelRecommendationsCell.draw(canvas);
              return;
-@@ -21130,6 +21172,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -21198,6 +21240,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawAnimatedEmojis(Canvas canvas, float alpha) {
@@ -2897,7 +2910,7 @@ index 6a24ff08..db44f051 100644
          drawAnimatedEmojiMessageText(canvas, alpha);
          if (shouldDrawCaptionLayout()) {
              drawAnimatedEmojiCaption(canvas, alpha);
-@@ -21266,6 +21309,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -21334,6 +21377,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawAnimatedEmojiCaption(Canvas canvas, float alpha) {
@@ -2905,7 +2918,7 @@ index 6a24ff08..db44f051 100644
          if (captionLayout == null) {
              return;
          }
-@@ -21303,10 +21347,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -21371,10 +21415,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawSideButton(Canvas canvas) {
@@ -2918,7 +2931,7 @@ index 6a24ff08..db44f051 100644
          if (hideSideButtonByQuickShare && !fromQuickShare || drawSideButton == 0) {
              return;
          }
-@@ -21471,6 +21517,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -21539,6 +21585,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
  
      private SummaryIcon summarizeIcon;
      public void drawSummarizeButton(Canvas canvas) {
@@ -2926,7 +2939,7 @@ index 6a24ff08..db44f051 100644
          summarizeButtonX = sideStartX;
          summarizeButtonY = getPaddingTop() + dp(8);
          summarizeButtonY = Math.max(Math.min(-childPosition2 + dp(4), sideStartY - dp(42)), summarizeButtonY);
-@@ -21684,6 +21731,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -21752,6 +21799,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawNamesLayout(Canvas canvas, float alpha) {
@@ -2936,7 +2949,7 @@ index 6a24ff08..db44f051 100644
          long newAnimationTime = SystemClock.elapsedRealtime();
          long dt = newAnimationTime - lastNamesAnimationTime;
          if (dt > 17) {
-@@ -22826,6 +22876,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -22947,6 +22997,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawCaptionLayout(Canvas canvas, boolean selectionOnly, float alpha) {
@@ -2944,7 +2957,7 @@ index 6a24ff08..db44f051 100644
          if (animatedEmojiStack != null && !(canvas instanceof SizeNotifierFrameLayout.SimplerCanvas) && (captionLayout != null || transitionParams.animateOutCaptionLayout != null)) {
              animatedEmojiStack.clearPositions();
          }
-@@ -22846,6 +22897,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -22967,6 +23018,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawCommentLayout(Canvas canvas, float alpha) {
@@ -2952,7 +2965,7 @@ index 6a24ff08..db44f051 100644
          int x;
          if (mediaBackground) {
              x = backgroundDrawableLeft + dp(12) + getExtraTextX();
-@@ -23136,6 +23188,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -23257,6 +23309,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawReactionsLayout(Canvas canvas, float alpha, Integer only) {
@@ -2960,7 +2973,7 @@ index 6a24ff08..db44f051 100644
          if (isRoundVideo) {
              reactionsLayoutInBubble.drawServiceShaderBackground = 1f - getVideoTranscriptionProgress();
          }
-@@ -23485,6 +23538,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -23606,6 +23659,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawTime(Canvas canvas, float alpha, boolean fromParent) {
@@ -2968,7 +2981,7 @@ index 6a24ff08..db44f051 100644
          if (!drawFromPinchToZoom && delegate != null && delegate.getPinchToZoomHelper() != null && delegate.getPinchToZoomHelper().isInOverlayModeFor(this) && shouldDrawTimeOnMedia()) {
              return;
          }
-@@ -28828,6 +28882,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
+@@ -29070,6 +29124,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
      }
  
      public void drawVideoTimestamps(Canvas canvas, int color) {
@@ -2977,10 +2990,10 @@ index 6a24ff08..db44f051 100644
          float progress;
          if (!currentMessageObject.openedInViewer && currentMessageObject.getVideoStartsTimestamp() != -1) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
-index fa76337a..f93aaf4a 100644
+index 47fc91aa..7a727068 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
-@@ -2610,6 +2610,37 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+@@ -2725,6 +2725,37 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
              FileLog.e(e);
          }
  
@@ -3019,10 +3032,10 @@ index fa76337a..f93aaf4a 100644
              CharSequence messageStringFinal;
              // Removing links and bold spans to get rid of underlining and boldness
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-index c4bb90c5..0af21943 100644
+index f2ccd7e9..ea053fb9 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java
-@@ -1213,6 +1213,22 @@ public class ChatActivity extends BaseFragment implements
+@@ -1209,6 +1209,22 @@ public class ChatActivity extends BaseFragment implements
      public final static int OPTION_ADD_STICKER_TO_FAVORITES = 20;
      public final static int OPTION_DELETE_STICKER_FROM_FAVORITES = 21;
      public final static int OPTION_COPY_LINK = 22;
@@ -3045,7 +3058,7 @@ index c4bb90c5..0af21943 100644
      public final static int OPTION_REPORT_CHAT = 23;
      public final static int OPTION_CANCEL_SENDING = 24;
      public final static int OPTION_UNVOTE = 25;
-@@ -33033,6 +33049,26 @@ public class ChatActivity extends BaseFragment implements
+@@ -33116,6 +33132,26 @@ public class ChatActivity extends BaseFragment implements
                  presentFragment(fragment);
                  break;
              }
@@ -3070,9 +3083,9 @@ index c4bb90c5..0af21943 100644
 +                break;
 +            }
              case OPTION_COPY: {
+                 final TL_iv.RichMessage copyRichMessage = selectedObject.messageOwner != null ? selectedObject.messageOwner.rich_message : null;
                  if (selectedObject.isDice()) {
-                     AndroidUtilities.addToClipboard(selectedObject.getDiceEmoji());
-@@ -45240,6 +45276,19 @@ public class ChatActivity extends BaseFragment implements
+@@ -45382,6 +45418,19 @@ public class ChatActivity extends BaseFragment implements
              deleteIconRes = R.drawable.msg_delete;
          }
  
@@ -3090,104 +3103,104 @@ index c4bb90c5..0af21943 100644
 +        }
 +
          if (type == -1) {
-             if ((selectedObject.type == MessageObject.TYPE_TEXT || selectedObject.type == MessageObject.TYPE_ARTICLE || selectedObject.isAnimatedEmoji() || selectedObject.isAnimatedEmojiStickers() || getMessageCaption(selectedObject, selectedObjectGroup) != null) && !noforwardsOrPaidMedia && !message.isExpiredStory()) {
+             if ((selectedObject.type == MessageObject.TYPE_TEXT || selectedObject.type == MessageObject.TYPE_ARTICLE || selectedObject.isAnimatedEmoji() || selectedObject.isAnimatedEmojiStickers() || getMessageCaption(selectedObject, selectedObjectGroup) != null) && (!noforwardsOrPaidMedia || isEphemeral) && !message.isExpiredStory()) {
                  items.add(LocaleController.getString(R.string.Copy));
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-index 74fc75ab..8ae5f73a 100644
+index cdc7031a..3d184a8a 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-@@ -13411,6 +13411,86 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
-                 args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
-                 presentFragment(new ChatActivity(args));
-             });
-+            // ad-blocker: quick Ghost mode toggle right in the main overflow menu.
-+            boolean ghRu;
+@@ -13726,6 +13726,86 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+             args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
+             presentFragment(new ChatActivity(args));
+         });
++        // ad-blocker: quick Ghost mode toggle right in the main overflow menu.
++        boolean ghRu;
++        try {
++            LocaleController.LocaleInfo li = LocaleController.getInstance().getCurrentLocaleInfo();
++            ghRu = li != null && li.shortName != null && li.shortName.toLowerCase().startsWith("ru");
++        } catch (Throwable e) {
++            ghRu = false;
++        }
++        final boolean ghRuF = ghRu;
++        String ghLabel = (ghRuF ? "Режим призрака: " : "Ghost mode: ")
++                + (SharedConfig.ghostMode ? (ghRuF ? "вкл" : "on") : (ghRuF ? "выкл" : "off"));
++        io.add(R.drawable.msg_block, ghLabel, () -> {
++            SharedConfig.toggleGhostMode();
 +            try {
-+                LocaleController.LocaleInfo li = LocaleController.getInstance().getCurrentLocaleInfo();
-+                ghRu = li != null && li.shortName != null && li.shortName.toLowerCase().startsWith("ru");
-+            } catch (Throwable e) {
-+                ghRu = false;
++                String m = (ghRuF ? "Режим призрака: " : "Ghost mode: ")
++                        + (SharedConfig.ghostMode ? (ghRuF ? "включён" : "enabled") : (ghRuF ? "выключен" : "disabled"));
++                android.widget.Toast.makeText(ApplicationLoader.applicationContext, m, android.widget.Toast.LENGTH_SHORT).show();
++            } catch (Throwable ignore) {
 +            }
-+            final boolean ghRuF = ghRu;
-+            String ghLabel = (ghRuF ? "Режим призрака: " : "Ghost mode: ")
-+                    + (SharedConfig.ghostMode ? (ghRuF ? "вкл" : "on") : (ghRuF ? "выкл" : "off"));
-+            io.add(R.drawable.msg_block, ghLabel, () -> {
-+                SharedConfig.toggleGhostMode();
-+                try {
-+                    String m = (ghRuF ? "Режим призрака: " : "Ghost mode: ")
-+                            + (SharedConfig.ghostMode ? (ghRuF ? "включён" : "enabled") : (ghRuF ? "выключен" : "disabled"));
-+                    android.widget.Toast.makeText(ApplicationLoader.applicationContext, m, android.widget.Toast.LENGTH_SHORT).show();
-+                } catch (Throwable ignore) {
-+                }
-+            });
-+            // ad-blocker: adjustable similarity threshold (one knob for ads + duplicates).
-+            int simP = 70;
++        });
++        // ad-blocker: adjustable similarity threshold (one knob for ads + duplicates).
++        int simP = 70;
++        try {
++            if (com.tgadblock.AdFilter.getInstance() != null) simP = com.tgadblock.AdFilter.getInstance().getSimPercent();
++        } catch (Throwable e) {
++        }
++        io.add(R.drawable.msg_settings_old,
++                (ghRuF ? "Порог схожести: " : "Similarity: ") + simP + "%", () -> {
 +            try {
-+                if (com.tgadblock.AdFilter.getInstance() != null) simP = com.tgadblock.AdFilter.getInstance().getSimPercent();
-+            } catch (Throwable e) {
++                int cur = com.tgadblock.AdFilter.getInstance().getSimPercent();
++                int[] steps = {70, 75, 80, 85, 90, 95};
++                int next = steps[0];
++                for (int s : steps) { if (s > cur) { next = s; break; } }
++                com.tgadblock.AdFilter.getInstance().setSimPercent(next);
++                android.widget.Toast.makeText(ApplicationLoader.applicationContext,
++                        (ghRuF ? "Порог схожести: " : "Similarity: ") + next + "%"
++                        + (ghRuF ? " (выше = строже)" : " (higher = stricter)"),
++                        android.widget.Toast.LENGTH_SHORT).show();
++            } catch (Throwable ignore) {
 +            }
-+            io.add(R.drawable.msg_settings_old,
-+                    (ghRuF ? "Порог схожести: " : "Similarity: ") + simP + "%", () -> {
-+                try {
-+                    int cur = com.tgadblock.AdFilter.getInstance().getSimPercent();
-+                    int[] steps = {70, 75, 80, 85, 90, 95};
-+                    int next = steps[0];
-+                    for (int s : steps) { if (s > cur) { next = s; break; } }
-+                    com.tgadblock.AdFilter.getInstance().setSimPercent(next);
-+                    android.widget.Toast.makeText(ApplicationLoader.applicationContext,
-+                            (ghRuF ? "Порог схожести: " : "Similarity: ") + next + "%"
-+                            + (ghRuF ? " (выше = строже)" : " (higher = stricter)"),
-+                            android.widget.Toast.LENGTH_SHORT).show();
-+                } catch (Throwable ignore) {
-+                }
-+            });
-+            // ad-blocker: EXPERIMENTAL semantic (embedding) duplicate detection toggle.
-+            boolean semOn = false;
++        });
++        // ad-blocker: EXPERIMENTAL semantic (embedding) duplicate detection toggle.
++        boolean semOn = false;
++        try {
++            if (com.tgadblock.AdFilter.getInstance() != null) semOn = com.tgadblock.AdFilter.getInstance().isSemanticEnabled();
++        } catch (Throwable e) {
++        }
++        io.add(R.drawable.msg_block,
++                (ghRuF ? "Блок по смыслу: " : "Semantic block: ")
++                + (semOn ? (ghRuF ? "вкл" : "on") : (ghRuF ? "выкл" : "off")), () -> {
 +            try {
-+                if (com.tgadblock.AdFilter.getInstance() != null) semOn = com.tgadblock.AdFilter.getInstance().isSemanticEnabled();
-+            } catch (Throwable e) {
++                boolean now = !com.tgadblock.AdFilter.getInstance().isSemanticEnabled();
++                com.tgadblock.AdFilter.getInstance().setSemanticEnabled(now);
++                android.widget.Toast.makeText(ApplicationLoader.applicationContext,
++                        (ghRuF ? "Блок по смыслу: " : "Semantic block: ")
++                        + (now ? (ghRuF ? "включено (грузит модель…)" : "on (loading model…)")
++                               : (ghRuF ? "выключено" : "off")),
++                        android.widget.Toast.LENGTH_SHORT).show();
++            } catch (Throwable ignore) {
 +            }
-+            io.add(R.drawable.msg_block,
-+                    (ghRuF ? "Блок по смыслу: " : "Semantic block: ")
-+                    + (semOn ? (ghRuF ? "вкл" : "on") : (ghRuF ? "выкл" : "off")), () -> {
-+                try {
-+                    boolean now = !com.tgadblock.AdFilter.getInstance().isSemanticEnabled();
-+                    com.tgadblock.AdFilter.getInstance().setSemanticEnabled(now);
-+                    android.widget.Toast.makeText(ApplicationLoader.applicationContext,
-+                            (ghRuF ? "Блок по смыслу: " : "Semantic block: ")
-+                            + (now ? (ghRuF ? "включено (грузит модель…)" : "on (loading model…)")
-+                                   : (ghRuF ? "выключено" : "off")),
-+                            android.widget.Toast.LENGTH_SHORT).show();
-+                } catch (Throwable ignore) {
-+                }
-+            });
-+            // ad-blocker: EXPERIMENTAL lexical (SimHash + keyword) duplicate path toggle.
-+            boolean lexOn = true;
++        });
++        // ad-blocker: EXPERIMENTAL lexical (SimHash + keyword) duplicate path toggle.
++        boolean lexOn = true;
++        try {
++            if (com.tgadblock.AdFilter.getInstance() != null) lexOn = com.tgadblock.AdFilter.getInstance().isLexicalEnabled();
++        } catch (Throwable e) {
++        }
++        io.add(R.drawable.msg_block,
++                (ghRuF ? "Лексическое сравнение: " : "Lexical match: ")
++                + (lexOn ? (ghRuF ? "вкл" : "on") : (ghRuF ? "выкл" : "off")), () -> {
 +            try {
-+                if (com.tgadblock.AdFilter.getInstance() != null) lexOn = com.tgadblock.AdFilter.getInstance().isLexicalEnabled();
-+            } catch (Throwable e) {
++                boolean now = !com.tgadblock.AdFilter.getInstance().isLexicalEnabled();
++                com.tgadblock.AdFilter.getInstance().setLexicalEnabled(now);
++                android.widget.Toast.makeText(ApplicationLoader.applicationContext,
++                        (ghRuF ? "Лексическое сравнение: " : "Lexical match: ")
++                        + (now ? (ghRuF ? "включено" : "on") : (ghRuF ? "выключено" : "off")),
++                        android.widget.Toast.LENGTH_SHORT).show();
++            } catch (Throwable ignore) {
 +            }
-+            io.add(R.drawable.msg_block,
-+                    (ghRuF ? "Лексическое сравнение: " : "Lexical match: ")
-+                    + (lexOn ? (ghRuF ? "вкл" : "on") : (ghRuF ? "выкл" : "off")), () -> {
-+                try {
-+                    boolean now = !com.tgadblock.AdFilter.getInstance().isLexicalEnabled();
-+                    com.tgadblock.AdFilter.getInstance().setLexicalEnabled(now);
-+                    android.widget.Toast.makeText(ApplicationLoader.applicationContext,
-+                            (ghRuF ? "Лексическое сравнение: " : "Lexical match: ")
-+                            + (now ? (ghRuF ? "включено" : "on") : (ghRuF ? "выключено" : "off")),
-+                            android.widget.Toast.LENGTH_SHORT).show();
-+                } catch (Throwable ignore) {
-+                }
-+            });
-             if (ApplicationLoader.applicationLoaderInstance != null) {
-                 ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
-             }
++        });
+         if (ApplicationLoader.applicationLoaderInstance != null) {
+             ApplicationLoader.applicationLoaderInstance.addItemOptions(io);
+         }
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
-index 9cd2739a..8b2e8332 100644
+index aa7f5ed8..0fd1663e 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/LaunchActivity.java
-@@ -406,6 +406,17 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
+@@ -407,6 +407,17 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
          AndroidUtilities.checkDisplaySize(this, getResources().getConfiguration());
          currentAccount = UserConfig.selectedAccount;
          registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
