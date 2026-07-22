@@ -2273,8 +2273,8 @@ index 00000000..72052975
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 11;
-+    public static final String ADBLOCK_VERSION_NAME = "11.0";
++    public static final int ADBLOCK_VERSION = 12;
++    public static final String ADBLOCK_VERSION_NAME = "12.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
@@ -2491,7 +2491,7 @@ index fc43c648..c2979620 100644
          } else {
 -            enabled = MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("keepAliveService", false);
 +            // ad-blocker: default the keep-alive foreground service ON (no FCM on this .aad build).
-+            enabled = MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("keepAliveService", true);
++            enabled = MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("keepAliveService", false);
          }
          if (enabled) {
              try {
@@ -2505,11 +2505,11 @@ index 2e65a2ca..17f819d2 100644
          youtubePipType = mainPreferences.getString("youtubePipType", "disabled");
 -        keepAliveService = mainPreferences.getBoolean("keepAliveService", false);
 -        backgroundConnection = mainPreferences.getBoolean("keepAliveService", false);
-+        // ad-blocker: this repackaged .aad build cannot use FCM push (no valid Firebase app +
-+        // private api_id), so default the background keep-alive connection ON — it's the only
-+        // way to get background notifications without push. User can disable in Notifications.
-+        keepAliveService = mainPreferences.getBoolean("keepAliveService", true);
-+        backgroundConnection = mainPreferences.getBoolean("keepAliveService", true);
++        // ad-blocker v12: keep-alive/background-connection default OFF. Forcing it ON (earlier
++        // builds) kept the process alive 24/7, and a corrupt-media native decode loop in
++        // libtmessages then cooked the phone in the background. Enable in Notifications if needed.
++        keepAliveService = mainPreferences.getBoolean("keepAliveService", false);
++        backgroundConnection = mainPreferences.getBoolean("keepAliveService", false);
          promoDialogId = mainPreferences.getLong("proxy_dialog", 0);
          nextPromoInfoCheckTime = mainPreferences.getInt("nextPromoInfoCheckTime", 0);
          promoDialogType = mainPreferences.getInt("promo_dialog_type", 0);
