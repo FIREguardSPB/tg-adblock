@@ -8,7 +8,7 @@ on:
       ref:
         description: 'DrKLO/Telegram ref (tag or commit). Empty on schedule = latest release.'
         required: false
-        default: '9bcf3d2769c6d3f07105a992e5d9493e33ac3348'   # base the patch is known to apply to (12.9.0)
+        default: '62b56a07ca7e30e39f7fd00a6728d6bbd716ca1c'   # base the patch is known to apply to (12.10.1)
 
 permissions:
   contents: write              # needed to publish releases
@@ -31,7 +31,7 @@ jobs:
           # scheduled/empty builds to the known-good pinned base so they reproduce a
           # working APK (and become a no-op once that ref is released). To build a
           # newer upstream, dispatch this workflow with an explicit ref.
-          BASE=9bcf3d2769c6d3f07105a992e5d9493e33ac3348
+          BASE=62b56a07ca7e30e39f7fd00a6728d6bbd716ca1c
           REF="${{ github.event.inputs.ref }}"
           if [ -z "$REF" ]; then
             REF="$BASE"
@@ -68,6 +68,7 @@ jobs:
           git remote add origin https://github.com/DrKLO/Telegram.git
           git fetch --depth 1 origin "${{ steps.ref.outputs.ref }}"
           git checkout FETCH_HEAD
+          git submodule update --init --recursive --depth 1  # 12.10.1 moved jlatexmath + native deps to submodules
 
       - name: Apply ad-blocker patch
         if: steps.check.outputs.exists == 'false'
@@ -137,7 +138,7 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" \
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" \
                      "ndk;27.2.12479018" "cmake;3.22.1"
 
       - name: Build release APK
