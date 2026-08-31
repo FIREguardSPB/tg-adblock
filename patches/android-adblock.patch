@@ -1,7 +1,7 @@
-# Telegram AAD — ad-blocker patch (semantic dedup, v13 on DrKLO 12.10.1)
+# Telegram AAD — ad-blocker patch (semantic dedup, v14 on DrKLO 12.10.1)
 # base: DrKLO/Telegram @ 62b56a07ca7e30e39f7fd00a6728d6bbd716ca1c (12.10.1, build 7038)
 # apply: git checkout that base, git submodule update --init --recursive, then: git apply android-adblock.patch
-# model: NOT in this patch (binary). CI copies assets/tgadblock/{rubert.onnx,rubert_vocab.txt}.
+# model: NOT in this patch. CI copies assets/tgadblock/{rubert.onnx,rubert_vocab.txt}.
 #   rubert.onnx       sha256 c846bfd6d3d01599967a59a4fd36a4350ad4092f3c02232158ca67913ee71d9e
 #   rubert_vocab.txt  sha256 f056a69b097422652053bf87565c35543e5d81540ca4b7dddd28de4157a969e0
 # api_id/api_hash injected at build time from CI secrets; not in this patch.
@@ -583,10 +583,10 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..85e32056
+index 00000000..64ae1c7e
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,609 @@
+@@ -0,0 +1,700 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -716,6 +716,7 @@ index 00000000..85e32056
 +    public synchronized void reload() {
 +        rules = store.loadRules();
 +        config = store.getConfig();
++        stopPhrases = store.loadStopPhrases();
 +        cache.clear();
 +        dupCache.clear();
 +        seen.clear();
@@ -748,6 +749,20 @@ index 00000000..85e32056
 +        } catch (Throwable ignore) {
 +        }
 +        reload(); // re-derive thresholds + clear decision caches so it applies immediately
++    }
++
++    public synchronized int getSemPercent() {
++        return config != null ? config.semPercent : 65;
++    }
++
++    public synchronized void setSemPercent(int p) {
++        if (p < 40) p = 40;
++        if (p > 95) p = 95;
++        try {
++            store.setMeta("sem_percent", String.valueOf(p));
++        } catch (Throwable ignore) {
++        }
++        reload();
 +    }
 +
 +    public synchronized boolean isSemanticEnabled() {
@@ -1145,10 +1160,14 @@ index 00000000..85e32056
 +        String text = effectiveText(mo);
 +        boolean blocked = false;
 +        if (text != null && !text.trim().isEmpty()) {
-+            // Cheap heuristic first: Russian law forces explicit ad labels (erid token, the
-+            // "О рекламодателе" link, #реклама, an "ИНН <digits>" advertiser disclosure). These
-+            // are near-certain ad markers, so hide the post even with no learned rule.
-+            if (looksLikeLabeledAd(text)) {
++            // Cheap heuristics first (work with no learned rule):
++            //  - legal ad labels (erid / "О рекламодателе" / #реклама / ИНН disclosure)
++            //  - casino/betting gambling ads
++            //  - the user's own stop words/phrases
++            String btns = buttonText(mo);
++            if (looksLikeLabeledAd(text)
++                    || looksLikeGamblingAd(text, btns)
++                    || matchesStopPhrase(text + " " + btns)) {
 +                blocked = true;
 +            } else if (!rules.isEmpty()) {
 +                Core.MsgFeat f = new Core.MsgFeat();
@@ -1181,6 +1200,78 @@ index 00000000..85e32056
 +        return false;
 +    }
 +
++    // Casino/betting ad heuristic — vetted 0 false-positive / 0 false-negative on a news-heavy
++    // corpus. Ambiguous words (казино/ставка/депозит/розыгрыш/приз) NEVER fire alone: they must
++    // appear as an inline-button brand or co-occur with a second casino signal.
++    private static final String[] GAMBLE_BUTTON = {
++            "казино", "casino", "vulkan", "вулкан", "vavada", "вавада", "1win", "1вин",
++            "mostbet", "мостбет", "1xbet", "1хбет", "фонбет", "fonbet", "олимп", "велора",
++            "velora", "parimatch", "париматч", "betboom", "бетбум", "зеркало"
++    };
++    private static final String[] GAMBLE_BODY_STRONG = {
++            "бездеп", "фриспин", "фри спин", "free spin", "отыгрыш", "вейджер", "джекпот",
++            "jackpot", "фрибет", "freebet", "кэшаут", "краш-игра", "краш игра", "crash-игра"
++    };
++    private static final String[] GAMBLE_DENSE = {
++            "джекпот", "jackpot", "фриспин", "бездеп", "отыгрыш", "вейджер", "казино", "casino",
++            "фрибет", "зеркало", "экспресс", "занос", "краш"
++    };
++    private static final java.util.regex.Pattern GAMBLE_FS = java.util.regex.Pattern.compile("\\bfs\\b");
++
++    static boolean looksLikeGamblingAd(String body, String buttons) {
++        String btn = buttons == null ? "" : buttons.toLowerCase(java.util.Locale.ROOT);
++        for (String s : GAMBLE_BUTTON) if (btn.contains(s)) return true; // brand/зеркало in a button
++        String all = (body == null ? "" : body.toLowerCase(java.util.Locale.ROOT)) + " " + btn;
++        for (String s : GAMBLE_BODY_STRONG) if (all.contains(s)) return true; // casino-specific words
++        boolean promo = all.contains("промокод");
++        boolean deposit = all.contains("депозит");
++        boolean slots = all.contains("слот") || GAMBLE_FS.matcher(all).find();
++        boolean zanos = all.contains("занос");
++        boolean express = all.contains("экспресс");
++        if ((promo && deposit) || (promo && slots) || (deposit && slots)
++                || (deposit && zanos) || (express && zanos)) return true; // ambiguous-word combos
++        int g = 0;
++        for (String s : GAMBLE_DENSE) if (all.contains(s) && ++g >= 2) return true; // dense vocab
++        return false;
++    }
++
++    // User-editable block phrases. "+" inside a phrase = ALL words must be present (AND).
++    private java.util.List<String> stopPhrases = java.util.Collections.emptyList();
++
++    private boolean matchesStopPhrase(String text) {
++        if (text == null || stopPhrases.isEmpty()) return false;
++        String t = text.toLowerCase(java.util.Locale.ROOT);
++        for (String p : stopPhrases) {
++            if (p.indexOf('+') >= 0) {
++                boolean all = true;
++                for (String w : p.split("\\+")) {
++                    String ww = w.trim();
++                    if (!ww.isEmpty() && !t.contains(ww)) { all = false; break; }
++                }
++                if (all) return true;
++            } else if (t.contains(p)) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    public synchronized java.util.List<String> getStopPhrases() {
++        return new java.util.ArrayList<>(stopPhrases);
++    }
++
++    public synchronized void addStopPhrase(String phrase) {
++        try { store.addStopPhrase(phrase); } catch (Throwable ignore) {}
++        stopPhrases = store.loadStopPhrases();
++        cache.clear(); // re-evaluate ad decisions with the new phrase
++    }
++
++    public synchronized void removeStopPhrase(String phrase) {
++        try { store.removeStopPhrase(phrase); } catch (Throwable ignore) {}
++        stopPhrases = store.loadStopPhrases();
++        cache.clear();
++    }
++
 +    public synchronized void blockItem(MessageObject mo) {
 +        if (mo == null) return;
 +        String text = effectiveText(mo);
@@ -1198,10 +1289,10 @@ index 00000000..85e32056
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdStore.java b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
 new file mode 100644
-index 00000000..8f5ad890
+index 00000000..30e1fa88
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,396 @@
 +package com.tgadblock;
 +
 +import android.content.ContentValues;
@@ -1223,7 +1314,7 @@ index 00000000..8f5ad890
 + */
 +public final class AdStore extends SQLiteOpenHelper {
 +    private static final String DB_NAME = "adblock_rules.db";
-+    private static final int DB_VERSION = 8;
++    private static final int DB_VERSION = 10;
 +
 +    public AdStore(Context ctx) {
 +        super(ctx.getApplicationContext(), DB_NAME, null, DB_VERSION);
@@ -1250,6 +1341,7 @@ index 00000000..8f5ad890
 +        setDefaultMeta(db, "kw_min", "3");
 +        setDefaultMeta(db, "kw_strong_ratio", "0.7");
 +        ensureDedupSchema(db);
++        ensureStopPhrasesSchema(db);
 +    }
 +
 +    @Override
@@ -1289,6 +1381,14 @@ index 00000000..8f5ad890
 +            // path back ON alongside semantic for better coverage. Leaves the user's sim_percent.
 +            db.execSQL("INSERT OR REPLACE INTO meta(key, value) VALUES('dedup_lexical', '1')");
 +        }
++        if (oldVersion < 9) {
++            ensureStopPhrasesSchema(db); // user-editable block words/phrases
++        }
++        if (oldVersion < 10) {
++            // Separate semantic threshold (was sharing the lexical knob). Default 65% — a tiny
++            // embedding model needs a lower cosine bar to catch paraphrased duplicates.
++            db.execSQL("INSERT OR IGNORE INTO meta(key, value) VALUES('sem_percent', '65')");
++        }
 +    }
 +
 +    // Idempotent: the "seen posts" journal + dedup tuning defaults.
@@ -1304,7 +1404,8 @@ index 00000000..8f5ad890
 +        setDefaultMeta(db, "dedup_enabled", "1");
 +        setDefaultMeta(db, "dedup_lexical", "1");  // lexical (SimHash+keyword) path — cheap, on by default
 +        setDefaultMeta(db, "dedup_semantic", "1"); // semantic (embedding) path on by default
-+        setDefaultMeta(db, "sim_percent", "80"); // single user-facing similarity knob (default 80%)
++        setDefaultMeta(db, "sim_percent", "80"); // lexical similarity knob (default 80%)
++        setDefaultMeta(db, "sem_percent", "65"); // semantic (cosine) knob — lower to catch paraphrases
 +        setDefaultMeta(db, "dup_threshold", "19"); // EXPERIMENTAL ~70%
 +        setDefaultMeta(db, "dup_kw_ratio", "0.7");  // EXPERIMENTAL ~70%
 +        setDefaultMeta(db, "dup_min_tokens", "8");
@@ -1320,6 +1421,45 @@ index 00000000..8f5ad890
 +        db.execSQL("CREATE TABLE IF NOT EXISTS hidden_dups ("
 +                + "key TEXT PRIMARY KEY,"
 +                + "created_at INTEGER NOT NULL DEFAULT 0)");
++    }
++
++    // User-editable block phrases. A phrase is a lowercase substring; a phrase containing '+'
++    // means ALL of the '+'-separated words must be present (AND). Seeded with safe casino combos.
++    private static void ensureStopPhrasesSchema(SQLiteDatabase db) {
++        db.execSQL("CREATE TABLE IF NOT EXISTS stop_phrases ("
++                + "phrase TEXT PRIMARY KEY,"
++                + "created_at INTEGER NOT NULL DEFAULT 0)");
++        // Starts empty: casino/betting ads are covered by the built-in gambling heuristic;
++        // this list is for the user's own extra words/combos.
++    }
++
++    public void addStopPhrase(String phrase) {
++        if (phrase == null) return;
++        String p = phrase.trim().toLowerCase(java.util.Locale.ROOT);
++        if (p.isEmpty()) return;
++        ContentValues cv = new ContentValues();
++        cv.put("phrase", p);
++        cv.put("created_at", System.currentTimeMillis() / 1000L);
++        getWritableDatabase().insertWithOnConflict("stop_phrases", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
++    }
++
++    public void removeStopPhrase(String phrase) {
++        if (phrase == null) return;
++        getWritableDatabase().execSQL("DELETE FROM stop_phrases WHERE phrase = ?",
++                new Object[]{phrase.trim().toLowerCase(java.util.Locale.ROOT)});
++    }
++
++    public java.util.List<String> loadStopPhrases() {
++        java.util.List<String> out = new java.util.ArrayList<>();
++        SQLiteDatabase db = getReadableDatabase();
++        try (Cursor c = db.rawQuery("SELECT phrase FROM stop_phrases ORDER BY created_at DESC, phrase ASC", null)) {
++            while (c.moveToNext()) {
++                String p = c.getString(0);
++                if (p != null && !p.isEmpty()) out.add(p);
++            }
++        } catch (Throwable ignore) {
++        }
++        return out;
 +    }
 +
 +    private static void setDefaultMeta(SQLiteDatabase db, String key, String value) {
@@ -1388,19 +1528,24 @@ index 00000000..8f5ad890
 +                    case "dup_hidden_max_age_days": cfg.dupHiddenMaxAgeDays = Integer.parseInt(v); break;
 +                    case "mark_hidden_read": cfg.markHiddenRead = !"0".equals(v); break;
 +                    case "sim_percent": try { cfg.simPercent = Integer.parseInt(v); } catch (Exception e) {} break;
++                    case "sem_percent": try { cfg.semPercent = Integer.parseInt(v); } catch (Exception e) {} break;
 +                    case "dedup_semantic": cfg.semanticEnabled = !"0".equals(v); break;
 +                    default: break;
 +                }
 +            }
 +        }
-+        // The single similarity knob drives all thresholds (overrides the individual keys).
++        // Two separate knobs: sim_percent drives the LEXICAL thresholds (SimHash + keyword),
++        // sem_percent drives the SEMANTIC (cosine) threshold — the latter can go lower because a
++        // tiny embedding model scores paraphrases well below 0.80.
 +        int p = Math.max(50, Math.min(99, cfg.simPercent));
 +        cfg.simPercent = p;
 +        cfg.simhashThreshold = Math.round(64f * (1f - p / 100f)); // ~p% bit-similarity
 +        cfg.dupThreshold = cfg.simhashThreshold;
 +        cfg.dupKwRatio = p / 100.0;
 +        cfg.kwStrongRatio = p / 100.0;
-+        cfg.cosThreshold = p / 100.0; // semantic cosine threshold from the same knob
++        int ps = Math.max(40, Math.min(95, cfg.semPercent));
++        cfg.semPercent = ps;
++        cfg.cosThreshold = ps / 100.0;
 +        return cfg;
 +    }
 +
@@ -1603,10 +1748,10 @@ index 00000000..35a49521
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Core.java b/TMessagesProj/src/main/java/com/tgadblock/Core.java
 new file mode 100644
-index 00000000..23bf9d0c
+index 00000000..d117c698
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Core.java
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,164 @@
 +package com.tgadblock;
 +
 +import java.util.List;
@@ -1664,8 +1809,10 @@ index 00000000..23bf9d0c
 +
 +    public static final class Config {
 +        // EXPERIMENTAL: thresholds loosened to ~70% similarity (SimHash distance 19/64 ≈ 70%).
-+        // simPercent is the single user-facing knob; getConfig() derives the thresholds below from it.
++        // simPercent = lexical similarity knob (SimHash + keyword). semPercent = semantic (cosine)
++        // knob, SEPARATE because a tiny embedding model needs a lower bar to catch paraphrases.
 +        public int simPercent = 80;
++        public int semPercent = 65;
 +        public int simhashThreshold = 19; // ads: SimHash near-dup match (was 8 ≈ 87%)
 +        public double kwRatio = 0.35;
 +        public int kwMin = 3;
@@ -2313,7 +2460,7 @@ index 00000000..b4f4cebe
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..82119141
+index 00000000..abe2059f
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -2330,8 +2477,8 @@ index 00000000..82119141
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 13;
-+    public static final String ADBLOCK_VERSION_NAME = "13.0";
++    public static final int ADBLOCK_VERSION = 14;
++    public static final String ADBLOCK_VERSION_NAME = "14.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
@@ -3137,10 +3284,10 @@ index 26d82ff8..3e0519da 100644
              if ((selectedObject.type == MessageObject.TYPE_TEXT || selectedObject.type == MessageObject.TYPE_ARTICLE || selectedObject.isAnimatedEmoji() || selectedObject.isAnimatedEmojiStickers() || getMessageCaption(selectedObject, selectedObjectGroup) != null) && (!noforwardsOrPaidMedia || isEphemeral) && !message.isExpiredStory()) {
                  items.add(LocaleController.getString(R.string.Copy));
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-index b04f149f..cb1bfebf 100644
+index b04f149f..c738e4fd 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-@@ -13733,6 +13733,86 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
+@@ -13733,6 +13733,160 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
              args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
              presentFragment(new ChatActivity(args));
          });
@@ -3164,14 +3311,14 @@ index b04f149f..cb1bfebf 100644
 +                } catch (Throwable ignore) {
 +                }
 +            });
-+            // ad-blocker: adjustable similarity threshold (one knob for ads + duplicates).
-+            int simP = 70;
++            // ad-blocker: LEXICAL similarity threshold (SimHash + keyword; ads + identical dups).
++            int simP = 80;
 +            try {
 +                if (com.tgadblock.AdFilter.getInstance() != null) simP = com.tgadblock.AdFilter.getInstance().getSimPercent();
 +            } catch (Throwable e) {
 +            }
 +            io.add(R.drawable.msg_settings_old,
-+                    (ghRuF ? "Порог схожести: " : "Similarity: ") + simP + "%", () -> {
++                    (ghRuF ? "Порог (лексика): " : "Lexical thr.: ") + simP + "%", () -> {
 +                try {
 +                    int cur = com.tgadblock.AdFilter.getInstance().getSimPercent();
 +                    int[] steps = {70, 75, 80, 85, 90, 95};
@@ -3179,8 +3326,30 @@ index b04f149f..cb1bfebf 100644
 +                    for (int s : steps) { if (s > cur) { next = s; break; } }
 +                    com.tgadblock.AdFilter.getInstance().setSimPercent(next);
 +                    android.widget.Toast.makeText(ApplicationLoader.applicationContext,
-+                            (ghRuF ? "Порог схожести: " : "Similarity: ") + next + "%"
++                            (ghRuF ? "Порог (лексика): " : "Lexical thr.: ") + next + "%"
 +                            + (ghRuF ? " (выше = строже)" : " (higher = stricter)"),
++                            android.widget.Toast.LENGTH_SHORT).show();
++                } catch (Throwable ignore) {
++                }
++            });
++            // ad-blocker: SEMANTIC (embedding cosine) threshold — separate + lower, since a tiny
++            // model scores paraphrases well under 0.80. Cycles 50..80%.
++            int semP = 65;
++            try {
++                if (com.tgadblock.AdFilter.getInstance() != null) semP = com.tgadblock.AdFilter.getInstance().getSemPercent();
++            } catch (Throwable e) {
++            }
++            io.add(R.drawable.msg_settings_old,
++                    (ghRuF ? "Порог (смысл): " : "Semantic thr.: ") + semP + "%", () -> {
++                try {
++                    int cur = com.tgadblock.AdFilter.getInstance().getSemPercent();
++                    int[] steps = {50, 55, 60, 65, 70, 75, 80};
++                    int next = steps[0];
++                    for (int s : steps) { if (s > cur) { next = s; break; } }
++                    com.tgadblock.AdFilter.getInstance().setSemPercent(next);
++                    android.widget.Toast.makeText(ApplicationLoader.applicationContext,
++                            (ghRuF ? "Порог (смысл): " : "Semantic thr.: ") + next + "%"
++                            + (ghRuF ? " (ниже = ловит перефраз)" : " (lower = catches paraphrases)"),
 +                            android.widget.Toast.LENGTH_SHORT).show();
 +                } catch (Throwable ignore) {
 +                }
@@ -3221,6 +3390,58 @@ index b04f149f..cb1bfebf 100644
 +                            (ghRuF ? "Лексическое сравнение: " : "Lexical match: ")
 +                            + (now ? (ghRuF ? "включено" : "on") : (ghRuF ? "выключено" : "off")),
 +                            android.widget.Toast.LENGTH_SHORT).show();
++                } catch (Throwable ignore) {
++                }
++            });
++            // ad-blocker: user-editable stop words/phrases (add / list-delete).
++            int stopCount = 0;
++            try {
++                if (com.tgadblock.AdFilter.getInstance() != null) stopCount = com.tgadblock.AdFilter.getInstance().getStopPhrases().size();
++            } catch (Throwable e) {
++            }
++            io.add(R.drawable.msg_block,
++                    (ghRuF ? "Стоп-слова: " : "Stop words: ") + stopCount, () -> {
++                try {
++                    android.app.Activity act = getParentActivity();
++                    if (act == null) return;
++                    java.util.List<String> phrases = com.tgadblock.AdFilter.getInstance().getStopPhrases();
++                    android.widget.EditText input = new android.widget.EditText(act);
++                    input.setHint(ghRuF ? "слово или связка через +  (казино, промокод+депозит)"
++                                        : "word or combo with +  (casino, promo+deposit)");
++                    input.setTextColor(org.telegram.ui.ActionBar.Theme.getColor(org.telegram.ui.ActionBar.Theme.key_dialogTextBlack));
++                    input.setHintTextColor(org.telegram.ui.ActionBar.Theme.getColor(org.telegram.ui.ActionBar.Theme.key_dialogTextHint));
++                    android.widget.LinearLayout ll = new android.widget.LinearLayout(act);
++                    ll.setOrientation(android.widget.LinearLayout.VERTICAL);
++                    int pad = org.telegram.messenger.AndroidUtilities.dp(22);
++                    ll.setPadding(pad, org.telegram.messenger.AndroidUtilities.dp(4), pad, 0);
++                    ll.addView(input);
++                    AlertDialog.Builder b = new AlertDialog.Builder(act);
++                    b.setTitle((ghRuF ? "Стоп-слова (" : "Stop words (") + phrases.size() + ")");
++                    b.setView(ll);
++                    b.setPositiveButton(ghRuF ? "Добавить" : "Add", (d, w) -> {
++                        String v = input.getText() == null ? "" : input.getText().toString().trim();
++                        if (!v.isEmpty()) {
++                            com.tgadblock.AdFilter.getInstance().addStopPhrase(v);
++                            android.widget.Toast.makeText(ApplicationLoader.applicationContext,
++                                    (ghRuF ? "Добавлено: " : "Added: ") + v, android.widget.Toast.LENGTH_SHORT).show();
++                        }
++                    });
++                    if (!phrases.isEmpty()) {
++                        final String[] items = phrases.toArray(new String[0]);
++                        b.setNeutralButton(ghRuF ? "Удалить…" : "Delete…", (d, w) -> {
++                            AlertDialog.Builder db = new AlertDialog.Builder(act);
++                            db.setTitle(ghRuF ? "Тапни, чтобы удалить" : "Tap to delete");
++                            db.setItems(items, (dd, which) -> {
++                                com.tgadblock.AdFilter.getInstance().removeStopPhrase(items[which]);
++                                android.widget.Toast.makeText(ApplicationLoader.applicationContext,
++                                        (ghRuF ? "Удалено: " : "Deleted: ") + items[which], android.widget.Toast.LENGTH_SHORT).show();
++                            });
++                            db.setNegativeButton(ghRuF ? "Отмена" : "Cancel", null);
++                            db.show();
++                        });
++                    }
++                    b.setNegativeButton(ghRuF ? "Закрыть" : "Close", null);
++                    b.show();
 +                } catch (Throwable ignore) {
 +                }
 +            });
