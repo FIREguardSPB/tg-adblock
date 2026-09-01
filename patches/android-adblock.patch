@@ -1,4 +1,4 @@
-# Telegram AAD — ad-blocker patch (semantic dedup, v14 on DrKLO 12.10.1)
+# Telegram AAD — ad-blocker patch (semantic dedup, v15 on DrKLO 12.10.1)
 # base: DrKLO/Telegram @ 62b56a07ca7e30e39f7fd00a6728d6bbd716ca1c (12.10.1, build 7038)
 # apply: git checkout that base, git submodule update --init --recursive, then: git apply android-adblock.patch
 # model: NOT in this patch. CI copies assets/tgadblock/{rubert.onnx,rubert_vocab.txt}.
@@ -583,10 +583,10 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..64ae1c7e
+index 00000000..26419b66
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,700 @@
+@@ -0,0 +1,703 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -929,8 +929,11 @@ index 00000000..64ae1c7e
 +                        && (Core.hamming(s.simhash, sh) <= config.dupThreshold
 +                            || jaccard(s.keywords, kw) >= config.dupKwRatio);
 +                // emb is non-null only when semantic is enabled, so semHit implies semantic on
++                // Hybrid: a cosine match ALSO needs some shared keywords, so unrelated news
++                // (which the tiny model still scores high) isn't flagged as a paraphrase dup.
 +                boolean semHit = emb != null && s.embedding != null
-+                        && Embedder.cosine(emb, s.embedding) >= config.cosThreshold;
++                        && Embedder.cosine(emb, s.embedding) >= config.cosThreshold
++                        && jaccard(kw, s.keywords) >= config.dupSemMinKw;
 +                if (!(lexHit || semHit)) continue;
 +                // Matched pair. Canonical = the copy that sorts first in a stable total order
 +                // (date, then channel id) — deterministic regardless of arrival order or equal
@@ -1289,10 +1292,10 @@ index 00000000..64ae1c7e
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdStore.java b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
 new file mode 100644
-index 00000000..30e1fa88
+index 00000000..edf42315
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,402 @@
 +package com.tgadblock;
 +
 +import android.content.ContentValues;
@@ -1314,7 +1317,7 @@ index 00000000..30e1fa88
 + */
 +public final class AdStore extends SQLiteOpenHelper {
 +    private static final String DB_NAME = "adblock_rules.db";
-+    private static final int DB_VERSION = 10;
++    private static final int DB_VERSION = 11;
 +
 +    public AdStore(Context ctx) {
 +        super(ctx.getApplicationContext(), DB_NAME, null, DB_VERSION);
@@ -1385,9 +1388,15 @@ index 00000000..30e1fa88
 +            ensureStopPhrasesSchema(db); // user-editable block words/phrases
 +        }
 +        if (oldVersion < 10) {
-+            // Separate semantic threshold (was sharing the lexical knob). Default 65% — a tiny
-+            // embedding model needs a lower cosine bar to catch paraphrased duplicates.
-+            db.execSQL("INSERT OR IGNORE INTO meta(key, value) VALUES('sem_percent', '65')");
++            // Separate semantic threshold (was sharing the lexical knob).
++            db.execSQL("INSERT OR IGNORE INTO meta(key, value) VALUES('sem_percent', '75')");
++        }
++        if (oldVersion < 11) {
++            // v14's semantic-on-at-65% over-flagged unrelated news as duplicates (the tiny model
++            // scores unrelated text high). Turn semantic OFF (opt-in) and reset the threshold;
++            // the semantic path now also requires keyword overlap when re-enabled.
++            db.execSQL("INSERT OR REPLACE INTO meta(key, value) VALUES('dedup_semantic', '0')");
++            db.execSQL("INSERT OR REPLACE INTO meta(key, value) VALUES('sem_percent', '75')");
 +        }
 +    }
 +
@@ -1403,9 +1412,9 @@ index 00000000..30e1fa88
 +                + "embedding BLOB)");
 +        setDefaultMeta(db, "dedup_enabled", "1");
 +        setDefaultMeta(db, "dedup_lexical", "1");  // lexical (SimHash+keyword) path — cheap, on by default
-+        setDefaultMeta(db, "dedup_semantic", "1"); // semantic (embedding) path on by default
++        setDefaultMeta(db, "dedup_semantic", "0"); // semantic path opt-in (tiny model over-flags)
 +        setDefaultMeta(db, "sim_percent", "80"); // lexical similarity knob (default 80%)
-+        setDefaultMeta(db, "sem_percent", "65"); // semantic (cosine) knob — lower to catch paraphrases
++        setDefaultMeta(db, "sem_percent", "75"); // semantic (cosine) knob
 +        setDefaultMeta(db, "dup_threshold", "19"); // EXPERIMENTAL ~70%
 +        setDefaultMeta(db, "dup_kw_ratio", "0.7");  // EXPERIMENTAL ~70%
 +        setDefaultMeta(db, "dup_min_tokens", "8");
@@ -1748,10 +1757,10 @@ index 00000000..35a49521
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Core.java b/TMessagesProj/src/main/java/com/tgadblock/Core.java
 new file mode 100644
-index 00000000..d117c698
+index 00000000..3fd496c4
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Core.java
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,167 @@
 +package com.tgadblock;
 +
 +import java.util.List;
@@ -1812,7 +1821,7 @@ index 00000000..d117c698
 +        // simPercent = lexical similarity knob (SimHash + keyword). semPercent = semantic (cosine)
 +        // knob, SEPARATE because a tiny embedding model needs a lower bar to catch paraphrases.
 +        public int simPercent = 80;
-+        public int semPercent = 65;
++        public int semPercent = 75;
 +        public int simhashThreshold = 19; // ads: SimHash near-dup match (was 8 ≈ 87%)
 +        public double kwRatio = 0.35;
 +        public int kwMin = 3;
@@ -1828,8 +1837,11 @@ index 00000000..d117c698
 +        // EXPERIMENTAL: lexical (SimHash + keyword) and semantic (embeddings) dedup can be
 +        // toggled INDEPENDENTLY. A post is a duplicate if EITHER enabled path matches.
 +        public boolean lexicalEnabled = true;   // SimHash near-dup OR keyword Jaccard (cheap; catches identical dups)
-+        public boolean semanticEnabled = true;  // on-device embedding cosine (catches paraphrases)
-+        public double cosThreshold = 0.7; // derived from simPercent
++        public boolean semanticEnabled = false; // on-device embedding cosine (opt-in: tiny model over-flags)
++        public double cosThreshold = 0.75; // derived from semPercent
++        // Hybrid guard: a semantic (cosine) match ALSO needs this much keyword overlap, so
++        // unrelated news (which share no words) can't be flagged as paraphrase duplicates.
++        public double dupSemMinKw = 0.10;
 +    }
 +
 +    public static final class Rule {
@@ -2460,7 +2472,7 @@ index 00000000..b4f4cebe
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..abe2059f
+index 00000000..540b38f3
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -2477,8 +2489,8 @@ index 00000000..abe2059f
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 14;
-+    public static final String ADBLOCK_VERSION_NAME = "14.0";
++    public static final int ADBLOCK_VERSION = 15;
++    public static final String ADBLOCK_VERSION_NAME = "15.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
@@ -3284,7 +3296,7 @@ index 26d82ff8..3e0519da 100644
              if ((selectedObject.type == MessageObject.TYPE_TEXT || selectedObject.type == MessageObject.TYPE_ARTICLE || selectedObject.isAnimatedEmoji() || selectedObject.isAnimatedEmojiStickers() || getMessageCaption(selectedObject, selectedObjectGroup) != null) && (!noforwardsOrPaidMedia || isEphemeral) && !message.isExpiredStory()) {
                  items.add(LocaleController.getString(R.string.Copy));
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
-index b04f149f..c738e4fd 100644
+index b04f149f..ffb43173 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java
 @@ -13733,6 +13733,160 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
@@ -3343,7 +3355,7 @@ index b04f149f..c738e4fd 100644
 +                    (ghRuF ? "Порог (смысл): " : "Semantic thr.: ") + semP + "%", () -> {
 +                try {
 +                    int cur = com.tgadblock.AdFilter.getInstance().getSemPercent();
-+                    int[] steps = {50, 55, 60, 65, 70, 75, 80};
++                    int[] steps = {60, 65, 70, 75, 80, 85, 90, 95};
 +                    int next = steps[0];
 +                    for (int s : steps) { if (s > cur) { next = s; break; } }
 +                    com.tgadblock.AdFilter.getInstance().setSemPercent(next);
