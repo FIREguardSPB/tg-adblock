@@ -1,4 +1,4 @@
-# Telegram AAD — ad-blocker patch (semantic dedup, v15 on DrKLO 12.10.1)
+# Telegram AAD — ad-blocker patch (semantic dedup, v16 on DrKLO 12.10.1)
 # base: DrKLO/Telegram @ 62b56a07ca7e30e39f7fd00a6728d6bbd716ca1c (12.10.1, build 7038)
 # apply: git checkout that base, git submodule update --init --recursive, then: git apply android-adblock.patch
 # model: NOT in this patch. CI copies assets/tgadblock/{rubert.onnx,rubert_vocab.txt}.
@@ -6,6 +6,7 @@
 #   rubert_vocab.txt  sha256 f056a69b097422652053bf87565c35543e5d81540ca4b7dddd28de4157a969e0
 # api_id/api_hash injected at build time from CI secrets; not in this patch.
 #
+
 diff --git a/TMessagesProj/build.gradle b/TMessagesProj/build.gradle
 index 84b82260..f75326ab 100644
 --- a/TMessagesProj/build.gradle
@@ -583,10 +584,10 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..26419b66
+index 00000000..4a83d6a4
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,703 @@
+@@ -0,0 +1,712 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -614,7 +615,9 @@ index 00000000..26419b66
 +    private final AdStore store;
 +    private final android.content.Context appContext;
 +    private List<Core.Rule> rules;
-+    private Core.Config config;
++    // volatile: read lock-free from UI-thread render paths (DialogCell/ChatMessageCell) without
++    // taking the AdFilter monitor, which journalOne holds while running a slow Embedder.embed().
++    private volatile Core.Config config;
 +    private final Map<Integer, Boolean> cache = new HashMap<>();
 +    // cross-channel duplicate-news journal (bounded, persisted)
 +    private static final int SEEN_CAP = 2500;
@@ -622,8 +625,9 @@ index 00000000..26419b66
 +    private final Map<String, Boolean> dupCache = new HashMap<>();
 +    // persistent hide-decisions: a hidden dup stays hidden after journal rows are pruned
 +    private final Set<String> hiddenDups = new HashSet<>();
-+    // per-dialog highest msgId already marked read on the server (throttles render-time marking)
-+    private final Map<Long, Integer> lastMarkedRead = new HashMap<>();
++    // per-dialog highest msgId already marked read on the server (throttles render-time marking).
++    // ConcurrentHashMap so markReadForHidden can be lock-free (called from UI-thread layout).
++    private final Map<Long, Integer> lastMarkedRead = new java.util.concurrent.ConcurrentHashMap<>();
 +    // off-UI journaling of arriving posts (SimHash + embedding + SQLite insert). Runs at LOW OS
 +    // priority so the semantic embedding never competes with the UI / foreground work (heat + jank).
 +    private final java.util.concurrent.ExecutorService journalExec =
@@ -1032,8 +1036,14 @@ index 00000000..26419b66
 +    // Called from the cell when an ad/duplicate is hidden at render time, so posts that
 +    // were already in the channel (not just freshly-arrived ones) get marked read too.
 +    // Throttled per-dialog: only sends when the hidden id advances past what we sent.
-+    public synchronized void markReadForHidden(int account, long did, int msgId) {
-+        if (config == null || !config.markHiddenRead) return;
++    // Intentionally NOT synchronized: this runs on the UI thread from render paths, and
++    // journalOne holds the AdFilter monitor while embedding — taking the lock here would
++    // stall layout. lastMarkedRead is a ConcurrentHashMap and config is volatile, so the
++    // throttle is safe lock-free. The watermark is advanced BEFORE the async send (not in
++    // its callback), so a dropped callback can't cause render-coupled re-sends.
++    public void markReadForHidden(int account, long did, int msgId) {
++        final Core.Config cfg = config;
++        if (cfg == null || !cfg.markHiddenRead) return;
 +        if (did >= 0 || msgId <= 0) return; // channels only
 +        Integer last = lastMarkedRead.get(did);
 +        if (last != null && msgId <= last) return;
@@ -2472,7 +2482,7 @@ index 00000000..b4f4cebe
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..540b38f3
+index 00000000..c9b53c50
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -2489,8 +2499,8 @@ index 00000000..540b38f3
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 15;
-+    public static final String ADBLOCK_VERSION_NAME = "15.0";
++    public static final int ADBLOCK_VERSION = 16;
++    public static final String ADBLOCK_VERSION_NAME = "16.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
@@ -3180,10 +3190,10 @@ index ece0e392..274060a2 100644
          float progress;
          if (!currentMessageObject.openedInViewer && currentMessageObject.getVideoStartsTimestamp() != -1) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
-index 790e4493..bf914a36 100644
+index 790e4493..5b3ba50c 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
-@@ -2722,6 +2722,37 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
+@@ -2722,6 +2722,58 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
              FileLog.e(e);
          }
  
@@ -3200,6 +3210,18 @@ index 790e4493..bf914a36 100644
 +            }
 +            messageString = ru ? "Скрытая реклама" : "Hidden ad";
 +            thumbsCount = 0;
++            // ad-blocker: sync "read" to the server (so Telegram Desktop clears the badge too),
++            // but ONLY when this hidden ad is effectively the sole unread message. If real posts
++            // are stacked unread below it, we must NOT advance the read pointer past them from a
++            // passive list render — that would silently mark real news read on every device.
++            // (Opening the channel still marks everything read the normal way via onMeasure.)
++            try {
++                TLRPC.Dialog tgadDlg = MessagesController.getInstance(currentAccount).dialogs_dict.get(currentDialogId);
++                if (tgadDlg != null && tgadDlg.unread_count <= 1 && message.getId() >= tgadDlg.top_message) {
++                    com.tgadblock.AdFilter.getInstance().markReadForHidden(currentAccount, currentDialogId, message.getId());
++                }
++            } catch (Throwable ignore) {
++            }
 +        } else if (message != null && !message.isOutOwner()
 +                && com.tgadblock.AdFilter.getInstance() != null
 +                && com.tgadblock.AdFilter.getInstance().isKnownDuplicate(message)) {
@@ -3216,6 +3238,15 @@ index 790e4493..bf914a36 100644
 +            thumbsCount = 0;
 +            drawCount = false;
 +            unreadCount = 0;
++            // ad-blocker: same server "read" sync as the ad branch — gated to the sole-unread
++            // case so a real unread backlog under the duplicate is never silently cleared.
++            try {
++                TLRPC.Dialog tgadDlg = MessagesController.getInstance(currentAccount).dialogs_dict.get(currentDialogId);
++                if (tgadDlg != null && tgadDlg.unread_count <= 1 && message.getId() >= tgadDlg.top_message) {
++                    com.tgadblock.AdFilter.getInstance().markReadForHidden(currentAccount, currentDialogId, message.getId());
++                }
++            } catch (Throwable ignore) {
++            }
 +        }
 +
          try {
