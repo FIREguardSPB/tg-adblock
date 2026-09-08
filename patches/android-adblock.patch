@@ -1,4 +1,4 @@
-# Telegram AAD — ad-blocker patch (semantic dedup, v16 on DrKLO 12.10.1)
+# Telegram AAD — ad-blocker patch (semantic dedup, v17 on DrKLO 12.10.1)
 # base: DrKLO/Telegram @ 62b56a07ca7e30e39f7fd00a6728d6bbd716ca1c (12.10.1, build 7038)
 # apply: git checkout that base, git submodule update --init --recursive, then: git apply android-adblock.patch
 # model: NOT in this patch. CI copies assets/tgadblock/{rubert.onnx,rubert_vocab.txt}.
@@ -584,10 +584,10 @@ index 00000000..125a739d
 \ No newline at end of file
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
 new file mode 100644
-index 00000000..4a83d6a4
+index 00000000..16aa55aa
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdFilter.java
-@@ -0,0 +1,712 @@
+@@ -0,0 +1,718 @@
 +package com.tgadblock;
 +
 +import android.content.Context;
@@ -833,6 +833,7 @@ index 00000000..4a83d6a4
 +        }
 +        long sh = Normalize.simhashOf(text);
 +        Set<String> kw = Normalize.keywords(text);
++        long[] shg = Normalize.shingles(text);
 +        int date = mo.messageOwner.date;
 +        boolean dup = false;
 +        // Render path is lexical-only; semantic duplicates surface via the hiddenDups
@@ -841,7 +842,8 @@ index 00000000..4a83d6a4
 +            for (Core.SeenPost s : seen.values()) {
 +                if (s.dialogId == did) continue;     // only across different channels
 +                if (Core.hamming(s.simhash, sh) <= config.dupThreshold
-+                        || jaccard(s.keywords, kw) >= config.dupKwRatio) {
++                        || jaccard(s.keywords, kw) >= config.dupKwRatio
++                        || Normalize.shingleContainment(shg, s.shingles) >= config.dupShingleContain) {
 +                    // duplicate only if the matching copy is the canonical (sorts earlier in the
 +                    // stable (date, channel id) order); otherwise THIS is the original.
 +                    if (canonicalEarlier(s.date, s.dialogId, date, did)) {
@@ -858,6 +860,7 @@ index 00000000..4a83d6a4
 +            p.simhash = sh;
 +            p.keywords = kw;
 +            p.date = date;
++            p.shingles = shg;
 +            seen.put(key, p);
 +            try {
 +                store.addSeenPost(key, did, sh, kw, date);
@@ -918,6 +921,7 @@ index 00000000..4a83d6a4
 +        if (config == null) return;
 +        long sh = Normalize.simhashOf(text);
 +        Set<String> kw = Normalize.keywords(text);
++        long[] shg = Normalize.shingles(text);
 +        float[] emb = null;
 +        if (config.semanticEnabled && allowEmbed) {
 +            try {
@@ -931,7 +935,8 @@ index 00000000..4a83d6a4
 +                if (s.dialogId == did) continue;
 +                boolean lexHit = config.lexicalEnabled
 +                        && (Core.hamming(s.simhash, sh) <= config.dupThreshold
-+                            || jaccard(s.keywords, kw) >= config.dupKwRatio);
++                            || jaccard(s.keywords, kw) >= config.dupKwRatio
++                            || Normalize.shingleContainment(shg, s.shingles) >= config.dupShingleContain);
 +                // emb is non-null only when semantic is enabled, so semHit implies semantic on
 +                // Hybrid: a cosine match ALSO needs some shared keywords, so unrelated news
 +                // (which the tiny model still scores high) isn't flagged as a paraphrase dup.
@@ -966,6 +971,7 @@ index 00000000..4a83d6a4
 +            p.keywords = kw;
 +            p.date = date;
 +            p.embedding = emb;
++            p.shingles = shg;
 +            seen.put(key, p);
 +            try {
 +                store.addSeenPost(key, did, sh, kw, date, System.currentTimeMillis() / 1000L, emb);
@@ -1302,10 +1308,10 @@ index 00000000..4a83d6a4
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/AdStore.java b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
 new file mode 100644
-index 00000000..edf42315
+index 00000000..3a9e509a
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/AdStore.java
-@@ -0,0 +1,402 @@
+@@ -0,0 +1,404 @@
 +package com.tgadblock;
 +
 +import android.content.ContentValues;
@@ -1428,6 +1434,7 @@ index 00000000..edf42315
 +        setDefaultMeta(db, "dup_threshold", "19"); // EXPERIMENTAL ~70%
 +        setDefaultMeta(db, "dup_kw_ratio", "0.7");  // EXPERIMENTAL ~70%
 +        setDefaultMeta(db, "dup_min_tokens", "8");
++        setDefaultMeta(db, "dup_shingle_contain", "0.70"); // k-shingle containment (sim_percent-independent)
 +        setDefaultMeta(db, "dup_seen_max_age_days", "14");
 +        setDefaultMeta(db, "dup_hidden_max_age_days", "180");
 +        setDefaultMeta(db, "mark_hidden_read", "1");
@@ -1543,6 +1550,7 @@ index 00000000..edf42315
 +                    case "dup_threshold": cfg.dupThreshold = Integer.parseInt(v); break;
 +                    case "dup_kw_ratio": cfg.dupKwRatio = Double.parseDouble(v); break;
 +                    case "dup_min_tokens": cfg.dupMinTokens = Integer.parseInt(v); break;
++                    case "dup_shingle_contain": cfg.dupShingleContain = Double.parseDouble(v); break;
 +                    case "dup_seen_max_age_days": cfg.dupSeenMaxAgeDays = Integer.parseInt(v); break;
 +                    case "dup_hidden_max_age_days": cfg.dupHiddenMaxAgeDays = Integer.parseInt(v); break;
 +                    case "mark_hidden_read": cfg.markHiddenRead = !"0".equals(v); break;
@@ -1767,10 +1775,10 @@ index 00000000..35a49521
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Core.java b/TMessagesProj/src/main/java/com/tgadblock/Core.java
 new file mode 100644
-index 00000000..3fd496c4
+index 00000000..dfc00061
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Core.java
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,173 @@
 +package com.tgadblock;
 +
 +import java.util.List;
@@ -1841,6 +1849,11 @@ index 00000000..3fd496c4
 +        public int dupThreshold = 19;      // SimHash Hamming distance (lower = more similar required)
 +        public double dupKwRatio = 0.7;    // OR: keyword Jaccard overlap
 +        public int dupMinTokens = 8;       // skip messages shorter than this (avoid hiding short posts)
++        // Third lexical signal: k-shingle containment (share of the shorter post's 4-token
++        // sequences also present in the other). Catches "same news core + different channel
++        // footer" that SimHash/keyword miss when their threshold is tight. FIXED default,
++        // deliberately NOT derived from sim_percent, so a high sim_percent can't disable it.
++        public double dupShingleContain = 0.70;
 +        public int dupSeenMaxAgeDays = 14; // prune the seen-journal older than this
 +        public int dupHiddenMaxAgeDays = 180; // prune persisted hide-decisions older than this
 +        public boolean markHiddenRead = true; // mark hidden ads/dups read on the server (sync to desktop)
@@ -1880,6 +1893,7 @@ index 00000000..3fd496c4
 +        public Set<String> keywords = java.util.Collections.emptySet();
 +        public int date = 0;
 +        public float[] embedding = null; // semantic vector (null unless semantic mode on)
++        public long[] shingles = null;   // sorted k-shingle hashes (in-memory only; null if loaded from DB)
 +    }
 +
 +    public static final class Match {
@@ -2085,10 +2099,10 @@ index 00000000..933d89f2
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Normalize.java b/TMessagesProj/src/main/java/com/tgadblock/Normalize.java
 new file mode 100644
-index 00000000..683ee79a
+index 00000000..325961e3
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Normalize.java
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,137 @@
 +package com.tgadblock;
 +
 +import java.text.Normalizer;
@@ -2181,6 +2195,49 @@ index 00000000..683ee79a
 +
 +    public static long simhashOf(String s) {
 +        return Core.simhash(features(s));
++    }
++
++    // k-shingle set for near-duplicate containment: FNV-1a-64 hashes of every window of
++    // SHINGLE_K consecutive normalized tokens, sorted + deduped. Order-sensitive, so two posts
++    // that copy the same passage share shingles even with DIFFERENT channel headers/footers,
++    // while two differently-worded posts about the same topic share almost none. Sorted so
++    // containment is an O(n+m) merge. sim_percent-INDEPENDENT (fixed k), unlike SimHash/keyword.
++    static final int SHINGLE_K = 4;
++
++    public static long[] shingles(String s) {
++        List<String> t = tokens(s);
++        int n = t.size();
++        java.util.TreeSet<Long> set = new java.util.TreeSet<>();
++        if (n < SHINGLE_K) {
++            for (String tok : t) set.add(Core.fnv1a64(tok));
++        } else {
++            StringBuilder sb = new StringBuilder();
++            for (int i = 0; i + SHINGLE_K <= n; i++) {
++                sb.setLength(0);
++                for (int j = 0; j < SHINGLE_K; j++) {
++                    if (j > 0) sb.append(' ');
++                    sb.append(t.get(i + j));
++                }
++                set.add(Core.fnv1a64(sb.toString()));
++            }
++        }
++        long[] out = new long[set.size()];
++        int i = 0;
++        for (Long v : set) out[i++] = v;
++        return out; // ascending (signed) order from TreeSet
++    }
++
++    // containment = |A∩B| / min(|A|,|B|) via sorted merge (both arrays ascending, signed).
++    public static double shingleContainment(long[] a, long[] b) {
++        if (a == null || b == null || a.length == 0 || b.length == 0) return 0.0;
++        int i = 0, j = 0, inter = 0;
++        while (i < a.length && j < b.length) {
++            long x = a[i], y = b[j];
++            if (x == y) { inter++; i++; j++; }
++            else if (x < y) i++;
++            else j++;
++        }
++        return (double) inter / Math.min(a.length, b.length);
 +    }
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/UpdateChecker.java b/TMessagesProj/src/main/java/com/tgadblock/UpdateChecker.java
@@ -2482,7 +2539,7 @@ index 00000000..b4f4cebe
 +}
 diff --git a/TMessagesProj/src/main/java/com/tgadblock/Version.java b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 new file mode 100644
-index 00000000..c9b53c50
+index 00000000..a6c70848
 --- /dev/null
 +++ b/TMessagesProj/src/main/java/com/tgadblock/Version.java
 @@ -0,0 +1,19 @@
@@ -2499,8 +2556,8 @@ index 00000000..c9b53c50
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 16;
-+    public static final String ADBLOCK_VERSION_NAME = "16.0";
++    public static final int ADBLOCK_VERSION = 17;
++    public static final String ADBLOCK_VERSION_NAME = "17.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
