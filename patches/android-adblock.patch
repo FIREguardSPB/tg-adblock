@@ -2556,8 +2556,8 @@ index 00000000..a6c70848
 +public final class Version {
 +    private Version() {}
 +
-+    public static final int ADBLOCK_VERSION = 17;
-+    public static final String ADBLOCK_VERSION_NAME = "17.0";
++    public static final int ADBLOCK_VERSION = 18;
++    public static final String ADBLOCK_VERSION_NAME = "18.0";
 +
 +    /** owner/repo that publishes the signed APKs. */
 +    public static final String REPO = "FIREguardSPB/tg-adblock";
@@ -3726,3 +3726,44 @@ index 640e841b..1954b0ae 100644
      }
    ],
    "configuration_version": "1"
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java
+index b09347d..ca82820 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/LoginActivity.java
+@@ -3578,6 +3578,8 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
+         private Bundle currentParams;
+         private ProgressView progressView;
+         private TextView prefixTextView;
++        // tg-adblock: one-shot flag so the "via login email" chooser can fall through to the stock support flow
++        private boolean aadSkipEmailChoice;
+ 
+         private TextView missedCallDescriptionSubtitle;
+         private TextView missedCallDescriptionSubtitle2;
+@@ -3958,6 +3960,27 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
+                         }
+                         resendCode();
+                     } else {
++                        // tg-adblock: when the code went only "to another device" and the server offers no
++                        // fallback, let the user start the stock login-email setup (account.sendVerifyEmailCode
++                        // with emailVerifyPurposeLoginSetup) for this same phone_code_hash. The server decides
++                        // whether to accept it; on success the existing email-code screens take over.
++                        if (currentType == AUTH_TYPE_MESSAGE && !aadSkipEmailChoice && currentParams != null) {
++                            new AlertDialog.Builder(context)
++                                    .setTitle("Не пришёл код")
++                                    .setMessage("Попробовать войти через почту для входа? Telegram попросит адрес почты, пришлёт на неё код подтверждения, а потом новый код входа. Сервер может и отказать.")
++                                    .setPositiveButton("Через почту", (dialog, which) -> {
++                                        Bundle emailParams = new Bundle(currentParams);
++                                        emailParams.putBoolean("googleSignInAllowed", false);
++                                        setPage(VIEW_ADD_EMAIL, true, emailParams, false);
++                                    })
++                                    .setNegativeButton("Обычная помощь", (dialog, which) -> {
++                                        aadSkipEmailChoice = true;
++                                        problemText.performClick();
++                                    })
++                                    .show();
++                            return;
++                        }
++                        aadSkipEmailChoice = false;
+                         TLRPC.TL_auth_reportMissingCode req = new TLRPC.TL_auth_reportMissingCode();
+                         req.phone_number = requestPhone;
+                         req.phone_code_hash = phoneHash;
