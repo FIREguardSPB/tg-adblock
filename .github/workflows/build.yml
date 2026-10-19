@@ -15,7 +15,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest started moving to Ubuntu 26 on 2026-10-19 and the SDK setup broke there.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout this repo (patch + workflow)
         uses: actions/checkout@v4
@@ -133,6 +134,10 @@ jobs:
       - name: Set up Android SDK
         if: steps.check.outputs.exists == 'false'
         uses: android-actions/setup-android@v3
+        with:
+          # The legacy 'tools' package (action default: 'tools platform-tools') no longer exists
+          # for cmdline-tools 16.0, so sdkmanager exits 1. NDK/cmake/platform come in the next step.
+          packages: 'platform-tools'
 
       - name: Install NDK / cmake / platform
         if: steps.check.outputs.exists == 'false'
